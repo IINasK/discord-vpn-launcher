@@ -6,9 +6,11 @@ obj/
 publish/
 *.user
 
-# Binários do OpenVPN embutidos (não versionar: pesados e de terceiros)
-Resources/openvpn.exe
-Resources/wintun.dll
+# Binários de terceiros embutidos (OpenVPN + wintun + OpenSSL): pesados, e
+# reproduzíveis com tools/get-openvpn-binaries.ps1.
+# Padrão com ** porque Resources/ fica dentro de DiscordVpnLauncher/, não na raiz.
+**/Resources/*.exe
+**/Resources/*.dll
 
 # Artefatos de runtime / logs
 *.ovpn

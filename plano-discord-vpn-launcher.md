@@ -252,3 +252,38 @@ Saída: um `.exe` único em `bin\Release\net8.0-windows\win-x64\publish\`.
 10. [ ] Checagem ipinfo.
 11. [ ] Rodar a bateria de validação (seção 12).
 12. [ ] README com o pré-requisito de desativar o auto-start do Discord.
+
+---
+
+## 15. Correções descobertas na implementação
+
+Três premissas deste plano não se sustentaram na prática. Ficam registradas aqui porque afetam as seções 5, 7 e 12.
+
+### 15.1 `openvpn.exe` + `wintun.dll` não bastam (seção 5)
+
+O `openvpn.exe` linka contra as DLLs do OpenSSL: sem elas ele sai com `0xC0000135` (*DLL not found*) **antes de escrever qualquer linha de log** — sintoma que parece "o OpenVPN não iniciou, sem motivo". O conjunto embutido tem 7 arquivos:
+
+`openvpn.exe`, `tapctl.exe`, `wintun.dll`, `libcrypto-3-x64.dll`, `libssl-3-x64.dll`, `libpkcs11-helper-1.dll`, `vcruntime140.dll`
+
+Como a lista muda entre versões do OpenVPN, o `.csproj` embute `Resources\*` por curinga em vez de listar arquivos. O `tools/get-openvpn-binaries.ps1` monta a pasta sem instalar nada na máquina (`msiexec /a`) e valida a assinatura Authenticode de cada arquivo.
+
+### 15.2 O MSI do OpenVPN não contém `wintun.dll`
+
+Verificado nos 71 arquivos que o MSI extrai, inclusive com `ADDLOCAL=ALL`: o `wintun.dll` não está lá — o instalador trata o driver por outro caminho. Ele vem do upstream ([wintun.net](https://www.wintun.net), assinado pela WireGuard LLC), que é a origem do arquivo de qualquer forma.
+
+### 15.3 O OpenVPN **não cria** o adaptador wintun (seções 7 e 12)
+
+Esta é a correção que muda o desenho. Rodando um candidato já sanitizado, o OpenVPN completa o TLS e recebe o `PUSH_REPLY`, e então morre em:
+
+```
+open_tun
+There are no TAP-Windows, Wintun or ovpn-dco adapters on this system.
+You should be able to create an adapter by using tapctl.exe utility.
+Exiting due to fatal error
+```
+
+Consequências:
+
+- **O broker precisa criar o adaptador** com `tapctl create --hardware-id wintun --name DiscordVpnLauncher` antes de tentar os candidatos, e passar `--dev-node` ao OpenVPN. O `tapctl.exe` tem manifest `requireAdministrator`, então só roda elevado — encaixa no broker sem gerar um segundo UAC, já que um filho de processo elevado herda o token.
+- **Matar o OpenVPN não faz o adaptador desaparecer.** A afirmação da seção 7 ("o adaptador wintun some e leva as rotas junto") está errada: matar o processo desfaz as rotas, mas o adaptador persiste. O teardown do broker chama `tapctl delete` explicitamente — é o que faz o teste 6 da seção 12 (adaptador sumiu do `ipconfig`) passar.
+- **O timeout de 45 s da seção 6/9 é curto demais.** Criar o adaptador na primeira vez instala o driver, e o pior caso legítimo é isso mais cinco candidatos de 20 s. O pai passou a usar timeout por **inatividade** (45 s sem mudança de status do broker, que publica `starting`/`trying:N`), com teto absoluto de 3 min.
