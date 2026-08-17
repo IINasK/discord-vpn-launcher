@@ -1,0 +1,26 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+*.user
+
+# Binários do OpenVPN embutidos (não versionar: pesados e de terceiros)
+Resources/openvpn.exe
+Resources/wintun.dll
+
+# Artefatos de runtime / logs
+*.ovpn
+openvpn.log
+vpn-status.txt
+stop.signal
+
+# IDE
+.vs/
+.idea/
+*.suo
+
+# Windows
+Thumbs.db
+desktop.ini
