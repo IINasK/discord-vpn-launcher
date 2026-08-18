@@ -143,38 +143,259 @@ internal static class DiscordController
     }
 
     /// <summary>
+    /// Como o Discord seria lancado, sem lancar nada e sem perguntar. Serve ao modo
+    /// --diagnostico, que existe para dar suporte a distancia: e a primeira coisa a
+    /// pedir quando alguem diz "nao abre".
+    /// </summary>
+    public static string DescreverAlvo()
+    {
+        var alvo = LocalizarLauncher(permitirPergunta: false);
+
+        if (alvo is null)
+            return "NAO ENCONTRADO (o launcher vai pedir para voce apontar o arquivo)";
+
+        var (executavel, argumentos) = alvo.Value;
+        return argumentos.Length > 0
+            ? $"{executavel} {string.Join(' ', argumentos)}"
+            : executavel;
+    }
+
+    /// <summary>
+    /// Descobre como lancar o Discord, nesta ordem:
+    ///
+    ///   1. variavel de ambiente (escape manual, para quem quer forcar);
+    ///   2. escolha manual lembrada de uma execucao anterior;
+    ///   3. REGISTRO - onde o Discord anota onde ele realmente esta;
+    ///   4. o caminho padrao em %LocalAppData%;
+    ///   5. perguntar ao usuario, e lembrar da resposta.
+    ///
+    /// O registro entra antes do caminho padrao de proposito: e ele que resolve
+    /// instalacao em outro HD ou pasta personalizada, sem ninguem ter que
+    /// configurar nada. Um campo fixo (no instalador, por exemplo) nao resolveria
+    /// o mesmo problema: o valor congelaria e passaria a mentir assim que o
+    /// Discord fosse reinstalado em outro lugar.
+    ///
     /// Update.exe e o stub do Squirrel: ele resolve sozinho a versao atual em
     /// app-x.y.z, entao nao quebra a cada atualizacao do Discord. So caimos no
     /// Discord.exe direto se o stub nao existir.
     /// </summary>
-    private static (string Executavel, string[] Argumentos)? LocalizarLauncher()
+    private static (string Executavel, string[] Argumentos)? LocalizarLauncher(bool permitirPergunta = true)
     {
         var custom = Environment.GetEnvironmentVariable(EnvOverride);
         if (!string.IsNullOrWhiteSpace(custom) && File.Exists(custom))
+            return Montar(custom);
+
+        var lembrado = LerEscolhaLembrada();
+        if (lembrado is not null)
+            return Montar(lembrado);
+
+        foreach (var raiz in RaizesDoRegistro().Concat(RaizesPadrao()))
         {
-            return Path.GetFileName(custom).Equals("Update.exe", StringComparison.OrdinalIgnoreCase)
-                ? (custom, new[] { "--processStart", "Discord.exe" })
-                : (custom, Array.Empty<string>());
+            var achado = ProcurarNaRaiz(raiz);
+            if (achado is not null)
+                return achado;
         }
 
+        return permitirPergunta ? PerguntarAoUsuario() : null;
+    }
+
+    /// <summary>
+    /// Monta o par (executavel, argumentos): o stub do Squirrel precisa de
+    /// --processStart, o exe direto nao leva argumento nenhum.
+    /// </summary>
+    private static (string, string[]) Montar(string caminho)
+    {
+        if (!Path.GetFileName(caminho).Equals("Update.exe", StringComparison.OrdinalIgnoreCase))
+            return (caminho, Array.Empty<string>());
+
+        // Deduz a variante (Discord / PTB / Canary) pelo nome da pasta que contem
+        // o Update.exe, senao um usuario de PTB receberia --processStart Discord.exe.
+        var pasta = Path.GetFileName(Path.GetDirectoryName(caminho) ?? string.Empty);
+        var exe = pasta.StartsWith("Discord", StringComparison.OrdinalIgnoreCase)
+            ? $"{pasta}.exe"
+            : "Discord.exe";
+
+        return (caminho, new[] { "--processStart", exe });
+    }
+
+    /// <summary>
+    /// Pastas de instalacao segundo o proprio Discord. Duas fontes independentes,
+    /// as duas escritas por ele onde quer que tenha sido instalado:
+    ///
+    ///   - a entrada de desinstalacao (InstallLocation);
+    ///   - o handler do protocolo discord://, que aponta para o exe em uso.
+    /// </summary>
+    private static IEnumerable<string> RaizesDoRegistro()
+    {
+        foreach (var nome in new[] { "Discord", "DiscordPTB", "DiscordCanary" })
+        {
+            var chave = $@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{nome}";
+            var local = LerRegistro(chave, "InstallLocation");
+
+            if (!string.IsNullOrWhiteSpace(local))
+                yield return local;
+        }
+
+        foreach (var protocolo in new[] { "discord", "discord-ptb", "discord-canary" })
+        {
+            var comando = LerRegistro($@"Software\Classes\{protocolo}\shell\open\command", null);
+            var exe = ExtrairExecutavel(comando);
+
+            if (exe is null)
+                continue;
+
+            // O comando aponta para ...\Discord\app-1.2.3\Discord.exe; a raiz (com o
+            // Update.exe) fica um nivel acima da pasta app-*.
+            var pastaApp = Path.GetDirectoryName(exe);
+            var raiz = Path.GetDirectoryName(pastaApp);
+
+            if (raiz is not null)
+                yield return raiz;
+
+            if (pastaApp is not null)
+                yield return pastaApp;
+        }
+    }
+
+    private static IEnumerable<string> RaizesPadrao()
+    {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
         foreach (var pasta in new[] { "Discord", "DiscordPTB", "DiscordCanary" })
+            yield return Path.Combine(localAppData, pasta);
+    }
+
+    /// <summary>Procura o Update.exe (preferido) ou o exe direto dentro de uma raiz.</summary>
+    private static (string Executavel, string[] Argumentos)? ProcurarNaRaiz(string raiz)
+    {
+        if (string.IsNullOrWhiteSpace(raiz) || !Directory.Exists(raiz))
+            return null;
+
+        var update = Path.Combine(raiz, "Update.exe");
+        if (File.Exists(update))
+            return Montar(update);
+
+        foreach (var nome in new[] { "Discord", "DiscordPTB", "DiscordCanary" })
         {
-            var raiz = Path.Combine(localAppData, pasta);
-            if (!Directory.Exists(raiz))
-                continue;
-
-            var update = Path.Combine(raiz, "Update.exe");
-            if (File.Exists(update))
-                return (update, new[] { "--processStart", $"{pasta}.exe" });
-
-            var direto = VersaoMaisRecente(raiz, $"{pasta}.exe");
-            if (direto is not null)
+            // A raiz pode ser a propria pasta app-*, quando veio do protocolo.
+            var direto = Path.Combine(raiz, $"{nome}.exe");
+            if (File.Exists(direto))
                 return (direto, Array.Empty<string>());
+
+            var maisRecente = VersaoMaisRecente(raiz, $"{nome}.exe");
+            if (maisRecente is not null)
+                return (maisRecente, Array.Empty<string>());
         }
 
         return null;
+    }
+
+    private static string? LerRegistro(string chave, string? valor)
+    {
+        try
+        {
+            using var sub = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(chave);
+            return sub?.GetValue(valor ?? string.Empty) as string;
+        }
+        catch (Exception)
+        {
+            return null; // registro e uma pista, nunca um requisito
+        }
+    }
+
+    /// <summary>
+    /// Tira o caminho do exe de uma linha de comando do registro, do tipo
+    /// "C:\...\Discord.exe" --url -- "%1".
+    /// </summary>
+    private static string? ExtrairExecutavel(string? comando)
+    {
+        if (string.IsNullOrWhiteSpace(comando))
+            return null;
+
+        var texto = comando.Trim();
+
+        if (texto.StartsWith('"'))
+        {
+            var fim = texto.IndexOf('"', 1);
+            if (fim > 1)
+                texto = texto[1..fim];
+        }
+        else
+        {
+            var espaco = texto.IndexOf(' ');
+            if (espaco > 0)
+                texto = texto[..espaco];
+        }
+
+        return File.Exists(texto) ? texto : null;
+    }
+
+    /// <summary>
+    /// Ultimo recurso: pede o arquivo ao usuario e guarda a resposta, para nao
+    /// perguntar de novo a cada execucao. Cobre instalacao portatil ou qualquer
+    /// caso em que o Discord nao deixou rastro no registro.
+    /// </summary>
+    private static (string Executavel, string[] Argumentos)? PerguntarAoUsuario()
+    {
+        Log.Warn("Instalacao do Discord nao encontrada automaticamente.");
+
+        if (NativeMethods.ShowLocateDiscordPrompt() != LocateChoice.Localizar)
+            return null;
+
+        var escolhido = NativeMethods.EscolherExecutavel(
+            "Selecione o Discord.exe (ou o Update.exe da pasta do Discord)",
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+        if (escolhido is null || !File.Exists(escolhido))
+            return null;
+
+        GravarEscolha(escolhido);
+        Log.Step($"Discord localizado em {escolhido} (lembrado para as proximas vezes).");
+        return Montar(escolhido);
+    }
+
+    /// <summary>
+    /// Arquivo com a escolha manual. Fica na RAIZ da pasta de dados, nao em work\,
+    /// que e limpa a cada sessao.
+    /// </summary>
+    private static string ArquivoDaEscolha => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "DiscordVpnLauncher", "discord-path.txt");
+
+    private static string? LerEscolhaLembrada()
+    {
+        try
+        {
+            if (!File.Exists(ArquivoDaEscolha))
+                return null;
+
+            var caminho = File.ReadAllText(ArquivoDaEscolha).Trim();
+
+            // Some sozinho se o Discord foi desinstalado ou movido: melhor voltar a
+            // detectar do que insistir num caminho morto.
+            if (File.Exists(caminho))
+                return caminho;
+
+            Paths.TryDelete(ArquivoDaEscolha);
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static void GravarEscolha(string caminho)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ArquivoDaEscolha)!);
+            File.WriteAllText(ArquivoDaEscolha, caminho);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Nao foi possivel lembrar o caminho do Discord: {ex.Message}");
+        }
     }
 
     private static string? VersaoMaisRecente(string raiz, string nomeExe)

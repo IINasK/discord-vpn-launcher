@@ -16,7 +16,7 @@
 ;    instalado e com os atalhos dele intactos.
 
 #define AppNome "Discord VPN Launcher"
-#define AppVersao "1.1.0"
+#define AppVersao "1.2.0"
 #define AppExe "Discord.exe"
 #define AppAutor "Douglas"
 

@@ -367,3 +367,26 @@ Essa lógica vive em [installer/desativar-autostart.ps1](installer/desativar-aut
 Validado com o `settings.json` real (que **não** tinha a chave `OPEN_ON_STARTUP`, o caminho de inserção), mais os casos com a chave `true`, sem espaço e arquivo `{}` vazio: JSON continua parseável, acentos preservados, sem BOM (o Discord lê com `JSON.parse`, que engasga com BOM). O primeiro teste pegou um bug que teria corrompido a configuração de todo mundo: `Regex::Replace(s, p, r, 1)` — o quarto parâmetro do método **estático** é `RegexOptions`, não contagem, então a chave era injetada em *todo* `{` do arquivo, inclusive dentro de `WINDOW_BOUNDS`.
 
 O setup não é assinado: SmartScreen avisa na primeira execução. Resolver exigiria certificado de code signing pago — aceito, como já era para o `.exe`.
+
+### 15.10 A localização do Discord se pergunta ao Windows, não ao usuário
+
+O plano assumia `%LocalAppData%\Discord` com escape por variável de ambiente. Isso não cobre quem instalou o Discord em outro HD ou pasta personalizada — e a variável de ambiente é inviável como resposta para quem só recebeu o `.exe` de um amigo.
+
+A tentação é pedir o caminho no instalador. Não resolve: na hora de instalar a pessoa raramente sabe o que apontar, e o valor **congela** — reinstalou o Discord em outro lugar, o campo passa a mentir e o launcher quebra sem explicar por quê.
+
+O Discord já responde essa pergunta, em dois lugares que ele escreve onde quer que esteja instalado:
+
+```
+HKCU\...\Uninstall\Discord\InstallLocation       -> C:\...\Discord
+HKCU\Software\Classes\discord\shell\open\command -> "C:\...\Discord\app-1.0.9254\Discord.exe" --url -- "%1"
+```
+
+`DiscordController.LocalizarLauncher` passou a tentar, em ordem: env var → escolha manual lembrada → registro → caminho padrão → **perguntar** (seletor de arquivo nativo, `GetOpenFileNameW`, com a resposta guardada em `discord-path.txt`). O registro vem antes do caminho padrão de propósito: é a fonte sempre atual.
+
+A escolha lembrada mora na raiz da pasta de dados, **não** em `work\` — essa é limpa a cada sessão. E some sozinha se o arquivo apontado deixar de existir, para voltar a detectar em vez de insistir num caminho morto.
+
+`Montar` deduz a variante pelo nome da pasta (`DiscordPTB\Update.exe` → `--processStart DiscordPTB.exe`): passar `Discord.exe` fixo faria o stub do PTB tentar abrir um app inexistente.
+
+Validado com as duas fontes isoladas uma da outra (backup e restauração do registro real), apontando para uma instalação falsa fora do `%LocalAppData%`: as duas acharam, e a variante saiu correta.
+
+Junto veio `--diagnostico`, que imprime o alvo detectado e o estado dos binários sem tocar em nada — pensado para suporte a distância, já que a ferramenta agora roda em máquinas que não são a do autor.

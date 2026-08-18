@@ -123,13 +123,30 @@ Abra o `.exe` manualmente. Não há inicialização automática nem tarefa agend
   - **Sim** → continuar sem VPN (abre o Discord no seu IP real brasileiro)
   - **Não** → fechar sem abrir o Discord
 
-### Instalação do Discord fora do caminho padrão
+### Discord em outro HD ou pasta personalizada
 
-O launcher procura `%LocalAppData%\Discord\Update.exe` (o stub do Squirrel, que sempre aponta para a versão atual), com fallback para `DiscordPTB`/`DiscordCanary` e para o `app-*\Discord.exe` mais recente. Para uma instalação em outro lugar:
+**Não precisa configurar nada.** O launcher pergunta ao Windows onde o Discord está, nesta ordem:
+
+1. a variável `DISCORD_VPN_LAUNCHER_DISCORD`, se você quiser forçar um caminho;
+2. uma escolha manual lembrada de uma execução anterior;
+3. o **registro** — a entrada de desinstalação (`InstallLocation`) e o handler do protocolo `discord://`, que o Discord escreve onde quer que tenha sido instalado;
+4. o caminho padrão `%LocalAppData%\Discord` (e PTB/Canary);
+5. se nada disso resolver, ele **pergunta**: um seletor de arquivo abre para você apontar o `Discord.exe` (ou o `Update.exe`), e a resposta fica guardada para as próximas vezes.
+
+Ou seja, instalação em `D:\Jogos\Discord` funciona sozinha — o passo 3 acha. O passo 5 só aparece em caso realmente exótico, como uma cópia portátil que nunca foi instalada.
+
+Para conferir o que ele detectou, sem abrir nada:
 
 ```powershell
-$env:DISCORD_VPN_LAUNCHER_DISCORD = "D:\Discord\Update.exe"
+.\Discord.exe --diagnostico
 ```
+
+```
+  Discord em    : C:\Users\Douglas\AppData\Local\Discord\Update.exe --processStart Discord.exe
+  openvpn.exe   : extraido
+```
+
+Se alguém relatar que "não abre", **é o primeiro comando a pedir**.
 
 ### Quanto tempo a VPN fica de pé (e por que isso importa para call)
 
