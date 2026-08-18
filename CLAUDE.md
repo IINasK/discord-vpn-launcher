@@ -72,7 +72,7 @@ O país do candidato viaja como comentário `# vpngate-country=XX` no topo do pr
 | VPN subiu | `Initialization Sequence Completed` no log do OpenVPN | 20 s por candidato |
 | Está fora do BR | `GET .../country` retorna `!= BR` | 5 s por requisição, janela de 20 s |
 | Processo do Discord subiu | pipe `\\.\pipe\discord-ipc-0` existe | 30 s |
-| Discord capturou o IP | conexão ESTABLISHED do Discord com origem no IP do túnel, **mais** folga fixa | 60 s + 30 s |
+| Discord capturou o IP | conexão do Discord com origem no IP do túnel que **sobrevive 6 s**, mais 5 s de margem | 60 s |
 | Pai morreu (visto pelo broker) | `Process.GetProcessById(parentPid)` falha | poll 1 s |
 
 A espera do pai pelo broker usa timeout **por inatividade** (45 s sem mudança de status), não por total: criar o adaptador na primeira vez instala driver, e o pior caso legítimo — isso mais 5 candidatos de 20 s — estoura qualquer prazo fixo curto. O broker publica `starting`/`trying:N` justamente para renovar esse prazo. Teto absoluto de 3 min.
@@ -85,7 +85,9 @@ A espera do pai pelo broker usa timeout **por inatividade** (45 s sem mudança d
 - **Matar todos os `Discord.exe` antes de relançar** — ele roda em vários processos, e sem o kill o relaunch só foca a janela existente, sem re-captura de IP.
 - **Mutex nomeado** para instância única do launcher (duas execuções concorrentes brigariam pela mesma `workDir` e pelas rotas).
 - **Timeout do Discord não travar o processo:** se o pipe nunca aparecer, derrubar a VPN e encerrar de qualquer forma.
-- **A VPN só cai depois de o Discord ter falado pelo túnel.** O pipe de IPC sobe junto com o processo, ~5 s antes de o app tocar no gateway — derrubar o túnel ali fazia o Discord registrar o IP real com a VPN tendo funcionado do início ao fim. `Orchestrator.EsperarCapturaDeIp` espera uma conexão ESTABLISHED do Discord com origem no IP do adaptador ([TcpTable.cs](DiscordVpnLauncher/TcpTable.cs)) e só então segura mais 30 s (`DISCORD_VPN_LAUNCHER_ESPERA`) para o login concluir. É o que imita o teste manual que comprovadamente funciona: Proton conectado, Discord aberto, esperar carregar, desconectar. **A queda da conexão no teardown é esperada e inofensiva** — ver a seção da sacada, no topo.
+- **A VPN só cai depois de o Discord ter falado pelo túnel.** O pipe de IPC sobe junto com o processo, ~5 s antes de o app tocar no gateway — derrubar o túnel ali fazia o Discord registrar o IP real com a VPN tendo funcionado do início ao fim. `Orchestrator.EsperarCapturaDeIp` espera uma conexão do Discord com origem no IP do adaptador ([TcpTable.cs](DiscordVpnLauncher/TcpTable.cs)) que **sobreviva 6 s**, e só então segura mais 5 s (`DISCORD_VPN_LAUNCHER_ESPERA`). **A queda da conexão no teardown é esperada e inofensiva** — ver a seção da sacada, no topo.
+- **A janela de VPN é curta porque o custo dela recai no usuário.** Com o túnel de pé, todo o tráfego vai pelo relay no exterior e o ping em call fica impraticável — o usuário abre o Discord, entra em call e fica preso até o teardown. Por isso o sinal é a *persistência* da conexão (as conexões de boot do Discord duram menos de 1 s; a do gateway fica), e não uma margem fixa generosa. Ao mexer aqui, encurtar não é otimização cosmética e alongar não é grátis.
+- **O executável se chama `Discord.exe`** (`AssemblyName`, ícone próprio). Consequência: `Process.GetProcessesByName("Discord")` devolve **o próprio launcher e o broker**. `DiscordController.IgnorarPid` recebe os dois PIDs e os filtra — sem isso o `MatarTudo` se suicida no passo 3, e as requisições do próprio launcher ao ipinfo (que saem pelo túnel) seriam lidas como "o Discord já está conversando". Qualquer código novo que enumere processos do Discord tem que passar por esse filtro.
 
 ## Recursos embutidos (OpenVPN)
 

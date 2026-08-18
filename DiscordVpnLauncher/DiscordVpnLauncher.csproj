@@ -2,8 +2,16 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>DiscordVpnLauncher</AssemblyName>
+    <!-- O executavel se chama Discord.exe (icone e nome do proprio app) por pedido
+         de uso. Consequencia que NAO pode ser esquecida: o launcher passa a ter o
+         mesmo nome de processo que o alvo dele, entao DiscordController tem que
+         ignorar os PIDs proprios - sem isso ele se mata no MatarTudo. -->
+    <AssemblyName>Discord</AssemblyName>
+    <!-- Fixo de proposito: e o prefixo dos EmbeddedResource (DiscordVpnLauncher.
+         Resources.*) e o namespace do codigo. Renomear o assembly nao pode mexer
+         nisso. -->
     <RootNamespace>DiscordVpnLauncher</RootNamespace>
+    <ApplicationIcon>discord_icon.ico</ApplicationIcon>
     <TargetFramework>net8.0-windows</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>

@@ -326,3 +326,22 @@ Nenhuma das duas é fatal: falhando o sinal, o launcher registra o aviso e vai p
 **O que acontece no teardown, confirmado:** a conexão do Discord cai junto com o túnel (o IP de origem some do adaptador) e ele reconecta pelo IP real brasileiro — continuando a funcionar normalmente, com o IP não-brasileiro já registrado. A reconexão **não** refaz o registro.
 
 Isso deixou de ser risco e virou a premissa validada do produto: é exatamente por isso que basta uma janela curta de VPN cobrindo o login, e não uma VPN permanente. Ver a seção "A sacada" no [CLAUDE.md](CLAUDE.md).
+
+### 15.8 A janela de VPN precisa ser curta, e o sinal certo é a *persistência* da conexão
+
+A 15.7 resolveu a captura do IP com uma folga fixa de 30 s. Funciona, mas o custo cai no usuário: enquanto o túnel está de pé, **todo** o tráfego da máquina passa pelo relay no exterior. Na prática o usuário abre o Discord, entra numa call e fica com ping impraticável até o teardown — sem saber por quê nem por quanto tempo.
+
+A folga fixa era um chute para cima porque não havia um sinal melhor. Há: o Discord abre várias conexões curtas no boot (API, CDN, assets) que nascem e morrem em menos de um segundo, e **uma** que fica de pé — a sessão do gateway, que só se mantém depois de o login concluir. Como `GetExtendedTcpTable` dá porta local e destino, dá para identificar cada socket entre duas leituras e medir há quanto tempo ele existe.
+
+`DiscordController.EsperarSessaoPeloTunel` espera uma conexão pelo IP do túnel **sobreviver 6 s**; sockets que somem têm sua contagem descartada, para que uma sequência de conexões curtas não se acumule como se fosse uma persistente. Depois disso, 5 s de margem (era 30) e teardown. Resultado: ~15 s de VPN após o Discord abrir, contra ~40 s.
+
+O console mostra contagem regressiva durante a margem e termina com `VPN desligada, ping normal` — sem isso o usuário não tem como saber quando pode entrar em call.
+
+**Ao mexer nesses números:** encurtar não é otimização cosmética (é o que evita o único incômodo real da ferramenta) e alongar não é grátis (é ping do exterior na cara do usuário).
+
+### 15.9 O executável se chama `Discord.exe` — e isso quase se auto-destrói
+
+Por pedido de uso, o `AssemblyName` virou `Discord` e o exe ganhou o ícone do Discord (`ApplicationIcon`, [discord_icon.ico](DiscordVpnLauncher/discord_icon.ico)). Duas consequências não-óbvias:
+
+- `Process.GetProcessesByName("Discord")` passa a devolver **o próprio launcher e o broker**. Sem filtro, o passo 3 (matar todos os processos do Discord) mataria o próprio launcher antes de qualquer coisa acontecer. `DiscordController.IgnorarPid` registra o PID próprio e o do broker, e tanto o `MatarTudo` quanto a detecção de tráfego os ignoram — esta última também importa, porque as requisições do próprio launcher ao ipinfo saem pelo túnel e seriam lidas como "o Discord já está conversando".
+- O `RootNamespace` ficou **fixo** em `DiscordVpnLauncher` no `.csproj`. Os `EmbeddedResource` são nomeados a partir dele (`DiscordVpnLauncher.Resources.*`, que é o que `Paths.ExtractEmbeddedBinaries` procura); deixar o namespace seguir o `AssemblyName` renomearia os recursos e quebraria a extração dos binários em runtime, sem erro de compilação.

@@ -21,8 +21,18 @@ internal static class Orchestrator
     /// <summary>Prazo para o Discord abrir uma conexao saindo pelo IP do tunel.</summary>
     private static readonly TimeSpan TimeoutTrafegoDiscord = TimeSpan.FromSeconds(60);
 
-    /// <summary>Tempo de tunel mantido depois disso, para o login terminar.</summary>
-    private static readonly TimeSpan FolgaPadrao = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// Quanto uma conexao pelo tunel precisa sobreviver para valer como "sessao
+    /// firmada". As conexoes de boot do Discord (API, CDN) duram menos de um
+    /// segundo; a do gateway fica de pe, e so fica depois do login concluir.
+    /// </summary>
+    private static readonly TimeSpan EstabilidadeSessao = TimeSpan.FromSeconds(6);
+
+    /// <summary>
+    /// Margem final, ja com a sessao firmada. Pequena de proposito: cada segundo
+    /// aqui e um segundo de ping do Japao para o usuario.
+    /// </summary>
+    private static readonly TimeSpan FolgaPadrao = TimeSpan.FromSeconds(5);
 
     /// <summary>Ajuste da folga sem recompilar, em segundos.</summary>
     private const string EnvFolga = "DISCORD_VPN_LAUNCHER_ESPERA";
@@ -64,6 +74,10 @@ internal static class Orchestrator
     {
         var paths = Paths.Default();
         Process? broker = null;
+
+        // O executavel se chama Discord.exe: sem marcar os PIDs proprios, o passo de
+        // "matar todos os processos do Discord" mataria o proprio launcher.
+        DiscordController.IgnorarPid(Environment.ProcessId);
 
         if (ElevationHelper.IsElevated())
         {
@@ -124,6 +138,8 @@ internal static class Orchestrator
             if (broker is null)
                 return FinalizarComFalha(paths, broker, "elevacao recusada no UAC");
 
+            DiscordController.IgnorarPid(broker.Id); // tambem se chama Discord.exe
+
             // 9. Aguardar o tunel
             var status = AguardarStatusVpn(paths, broker);
             if (!status.StartsWith("connected:", StringComparison.Ordinal))
@@ -168,7 +184,8 @@ internal static class Orchestrator
 
             // 13-14. Teardown
             PararVpn(paths, broker);
-            Log.Step("Pronto. VPN derrubada, Discord rodando com o IP capturado.");
+            Log.Step("Pronto: VPN desligada, ping normal. O Discord ficou com o IP capturado - " +
+                     "pode entrar em call.");
             return 0;
         }
         catch (Exception ex)
@@ -427,19 +444,60 @@ internal static class Orchestrator
             Log.Warn("Nao foi possivel identificar o IP do tunel; " +
                      "sem como confirmar que o Discord saiu por ele.");
         }
-        else if (DiscordController.EsperarTrafegoPeloTunel(ipTunel, TimeoutTrafegoDiscord))
-        {
-            Log.Step($"Discord conectado aos servidores por dentro do tunel (origem {ipTunel}).");
-        }
         else
         {
-            Log.Warn($"Em {TimeoutTrafegoDiscord.TotalSeconds:0}s o Discord nao abriu " +
-                     $"nenhuma conexao pelo tunel ({ipTunel}). O IP capturado pode ser o real.");
+            var levou = DiscordController.EsperarSessaoPeloTunel(
+                ipTunel, TimeoutTrafegoDiscord, EstabilidadeSessao);
+
+            if (levou is not null)
+                Log.Step($"Sessao do Discord firmada pelo tunel em {levou.Value.TotalSeconds:0.#}s " +
+                         $"(origem {ipTunel}) - o IP ja foi registrado.");
+            else
+                Log.Warn($"Em {TimeoutTrafegoDiscord.TotalSeconds:0}s o Discord nao manteve " +
+                         $"nenhuma conexao pelo tunel ({ipTunel}). O IP capturado pode ser o real.");
         }
 
         var folga = FolgaAposConexao();
-        Log.Step($"Segurando a VPN por mais {folga.TotalSeconds:0}s para o login concluir...");
-        Thread.Sleep(folga);
+        if (folga > TimeSpan.Zero)
+            AguardarComContagem(folga);
+    }
+
+    /// <summary>
+    /// Espera a folga final mostrando quanto falta.
+    ///
+    /// A contagem nao e enfeite: enquanto o tunel esta de pe, TODO o trafego do
+    /// usuario passa pelo relay (Japao, tipicamente) e o ping em call fica
+    /// impraticavel. Sem saber quanto falta, a pessoa entra na call, acha que
+    /// travou e sai. Vai direto ao console, sem passar pelo Log, para nao encher o
+    /// launcher.log de uma linha por segundo.
+    /// </summary>
+    private static void AguardarComContagem(TimeSpan folga)
+    {
+        var fim = DateTime.UtcNow + folga;
+
+        while (true)
+        {
+            var restante = fim - DateTime.UtcNow;
+            if (restante <= TimeSpan.Zero)
+                break;
+
+            Escrever($"\r   VPN ainda ativa por {restante.TotalSeconds:0}s - espere para entrar em call.   ");
+            Thread.Sleep(Math.Min(500, (int)restante.TotalMilliseconds + 1));
+        }
+
+        Escrever("\r" + new string(' ', 70) + "\r");
+    }
+
+    private static void Escrever(string texto)
+    {
+        try
+        {
+            Console.Write(texto);
+        }
+        catch (IOException)
+        {
+            // console redirecionado ou fechado: a contagem e cosmetica
+        }
     }
 
     /// <summary>

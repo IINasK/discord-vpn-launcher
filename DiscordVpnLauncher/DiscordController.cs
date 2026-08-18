@@ -20,6 +20,28 @@ internal static class DiscordController
     private static readonly TimeSpan EsperaMortePorProcesso = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// PIDs que sao nossos, nunca do Discord de verdade.
+    ///
+    /// Existe porque o executavel se chama Discord.exe: sem esta lista,
+    /// GetProcessesByName("Discord") devolveria o proprio launcher e o broker, e o
+    /// MatarTudo se suicidaria antes de fazer qualquer coisa. Preenchida pelo
+    /// orquestrador com o PID proprio e o do broker.
+    /// </summary>
+    private static readonly HashSet<int> PidsProprios = new();
+
+    public static void IgnorarPid(int pid)
+    {
+        lock (PidsProprios)
+            PidsProprios.Add(pid);
+    }
+
+    private static bool EhNosso(int pid)
+    {
+        lock (PidsProprios)
+            return PidsProprios.Contains(pid);
+    }
+
+    /// <summary>
     /// Encerra TODOS os processos do Discord. Obrigatorio: ele roda em varios
     /// processos e, se algum sobrar, o relancamento apenas foca a janela existente -
     /// sem nova inicializacao, sem re-captura de IP, e o launcher perde a razao de ser.
@@ -35,6 +57,9 @@ internal static class DiscordController
             {
                 using (processo)
                 {
+                    if (EhNosso(processo.Id))
+                        continue; // somos nos: o launcher tambem se chama Discord.exe
+
                     try
                     {
                         processo.Kill(entireProcessTree: true);
@@ -159,36 +184,69 @@ internal static class DiscordController
             .FirstOrDefault(File.Exists);
 
     /// <summary>
-    /// Espera o Discord ter uma conexao ESTABLISHED saindo pelo IP do tunel.
+    /// Espera uma conexao do Discord pelo tunel que SOBREVIVA por
+    /// <paramref name="estabilidade"/>, e devolve quanto tempo isso levou.
     ///
-    /// Este e o sinal que importa, e o pipe de IPC nao serve para ele: o pipe sobe
-    /// junto com o processo, muito antes de o app falar com o gateway - foi por isso
-    /// que o launcher derrubava a VPN cedo demais e o Discord acabava registrando o
-    /// IP real. Ter um socket estabelecido com origem no IP do tunel prova as duas
-    /// coisas de uma vez: o Discord ja esta conversando, e esta conversando por
-    /// dentro da VPN.
+    /// O pipe de IPC nao serve como sinal aqui: ele sobe junto com o processo, muito
+    /// antes de o app falar com o gateway - era por isso que o launcher derrubava a
+    /// VPN cedo demais e o Discord acabava registrando o IP real.
+    ///
+    /// A persistencia e o que importa. O Discord abre varias conexoes curtas no
+    /// boot (API, CDN, assets) que nascem e morrem em menos de um segundo; a que
+    /// fica de pe e a sessao do gateway, e ela so se mantem depois do login ter
+    /// concluido - que e exatamente o momento em que o IP foi registrado. Uma
+    /// conexao com origem no IP do tunel prova as duas coisas de uma vez: o Discord
+    /// esta conversando, e a conversa sai por dentro da VPN.
+    ///
+    /// Observar isso vale mais do que esperar um tempo fixo generoso: encurta a
+    /// janela de VPN de dezenas de segundos para o tempo real do login, e o usuario
+    /// para de ficar preso com ping alto em call por causa de uma margem chutada.
+    ///
+    /// Cada socket e identificado por porta local + destino: se ele sumir da tabela,
+    /// a contagem daquela conexao e descartada e recomeca em outra.
     /// </summary>
-    public static bool EsperarTrafegoPeloTunel(IPAddress ipTunel, TimeSpan timeout)
+    /// <returns>Tempo ate a sessao firmar, ou null se estourou o timeout.</returns>
+    public static TimeSpan? EsperarSessaoPeloTunel(
+        IPAddress ipTunel, TimeSpan timeout, TimeSpan estabilidade)
     {
-        var limite = DateTime.UtcNow + timeout;
+        var inicio = DateTime.UtcNow;
+        var limite = inicio + timeout;
+        var desdeQuando = new Dictionary<string, DateTime>();
 
         while (DateTime.UtcNow < limite)
         {
             var pids = PidsAtivos();
+            var agora = DateTime.UtcNow;
+            var vistasAgora = new HashSet<string>();
 
-            if (pids.Count > 0)
+            foreach (var conexao in TcpTable.Estabelecidas())
             {
-                foreach (var (pid, local) in TcpTable.Estabelecidas())
+                if (!pids.Contains(conexao.Pid) || !conexao.Local.Equals(ipTunel))
+                    continue;
+
+                var chave = conexao.Chave;
+                vistasAgora.Add(chave);
+
+                if (!desdeQuando.TryGetValue(chave, out var desde))
                 {
-                    if (pids.Contains(pid) && local.Equals(ipTunel))
-                        return true;
+                    desde = agora;
+                    desdeQuando[chave] = desde;
                 }
+
+                if (agora - desde >= estabilidade)
+                    return agora - inicio;
             }
+
+            // Conexoes que sumiram nao acumulam tempo: eram trafego de boot, nao a
+            // sessao. Sem isto, uma sequencia de conexoes curtas somaria como se
+            // fosse uma so persistente.
+            foreach (var chave in desdeQuando.Keys.Where(k => !vistasAgora.Contains(k)).ToList())
+                desdeQuando.Remove(chave);
 
             Thread.Sleep(500);
         }
 
-        return false;
+        return null;
     }
 
     /// <summary>PIDs de todos os processos do Discord neste instante.</summary>
@@ -201,7 +259,12 @@ internal static class DiscordController
             foreach (var processo in Process.GetProcessesByName(nome))
             {
                 using (processo)
-                    pids.Add(processo.Id);
+                {
+                    // Sem isto, as consultas do proprio launcher ao ipinfo (que saem
+                    // pelo tunel) seriam lidas como "o Discord ja esta conversando".
+                    if (!EhNosso(processo.Id))
+                        pids.Add(processo.Id);
+                }
             }
         }
 

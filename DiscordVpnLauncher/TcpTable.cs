@@ -26,7 +26,7 @@ internal static class TcpTable
     /// <summary>
     /// MIB_TCPROW_OWNER_PID. Enderecos e portas vem como DWORD em ordem de rede -
     /// para o endereco isso e exatamente o que IPAddress(long) espera, entao nao ha
-    /// conversao a fazer. As portas nao interessam aqui.
+    /// conversao a fazer; as portas precisam dos dois bytes trocados (ver Porta).
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct MibTcpRowOwnerPid
@@ -44,11 +44,22 @@ internal static class TcpTable
         IntPtr tabela, ref int tamanho, bool ordenar, int familia, int classe, int reservado);
 
     /// <summary>
-    /// Conexoes IPv4 no estado ESTABLISHED, com o PID dono e o endereco local.
+    /// Uma conexao TCP estabelecida. <see cref="Chave"/> identifica o socket entre
+    /// duas leituras da tabela: e assim que se distingue uma conexao que PERSISTE
+    /// (a sessao do gateway) de varias conexoes curtas de HTTP que vao e vem.
+    /// </summary>
+    public readonly record struct Conexao(
+        int Pid, IPAddress Local, int PortaLocal, IPAddress Remoto, int PortaRemota)
+    {
+        public string Chave => $"{PortaLocal}->{Remoto}:{PortaRemota}";
+    }
+
+    /// <summary>
+    /// Conexoes IPv4 no estado ESTABLISHED, com o PID dono.
     /// Devolve lista vazia em qualquer erro - isto e um sinal de prontidao, nunca
     /// motivo para abortar a sessao.
     /// </summary>
-    public static IReadOnlyList<(int Pid, IPAddress Local)> Estabelecidas()
+    public static IReadOnlyList<Conexao> Estabelecidas()
     {
         var tamanho = 0;
 
@@ -60,10 +71,10 @@ internal static class TcpTable
                 IntPtr.Zero, ref tamanho, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
 
             if (codigo != ERROR_INSUFFICIENT_BUFFER && codigo != 0)
-                return Array.Empty<(int, IPAddress)>();
+                return Array.Empty<Conexao>();
 
             if (tamanho <= 0)
-                return Array.Empty<(int, IPAddress)>();
+                return Array.Empty<Conexao>();
 
             var buffer = Marshal.AllocHGlobal(tamanho);
             try
@@ -75,7 +86,7 @@ internal static class TcpTable
                     continue; // cresceu entre as duas chamadas
 
                 if (codigo != 0)
-                    return Array.Empty<(int, IPAddress)>();
+                    return Array.Empty<Conexao>();
 
                 return Ler(buffer);
             }
@@ -85,25 +96,37 @@ internal static class TcpTable
             }
         }
 
-        return Array.Empty<(int, IPAddress)>();
+        return Array.Empty<Conexao>();
     }
 
-    private static List<(int Pid, IPAddress Local)> Ler(IntPtr buffer)
+    private static List<Conexao> Ler(IntPtr buffer)
     {
         // MIB_TCPTABLE_OWNER_PID: contagem em DWORD, seguida do vetor de linhas.
         var total = Marshal.ReadInt32(buffer);
         var tamanhoLinha = Marshal.SizeOf<MibTcpRowOwnerPid>();
         var primeira = buffer + sizeof(int);
-        var resultado = new List<(int, IPAddress)>(total);
+        var resultado = new List<Conexao>(total);
 
         for (var i = 0; i < total; i++)
         {
             var linha = Marshal.PtrToStructure<MibTcpRowOwnerPid>(primeira + (i * tamanhoLinha));
 
-            if (linha.Estado == MIB_TCP_STATE_ESTAB)
-                resultado.Add(((int)linha.Pid, new IPAddress(linha.EnderecoLocal)));
+            if (linha.Estado != MIB_TCP_STATE_ESTAB)
+                continue;
+
+            resultado.Add(new Conexao(
+                (int)linha.Pid,
+                new IPAddress(linha.EnderecoLocal),
+                Porta(linha.PortaLocal),
+                new IPAddress(linha.EnderecoRemoto),
+                Porta(linha.PortaRemota)));
         }
 
         return resultado;
     }
+
+    /// <summary>
+    /// A porta vem nos dois bytes baixos do DWORD, em ordem de rede (big-endian).
+    /// </summary>
+    private static int Porta(uint bruto) => (int)(((bruto & 0xFF) << 8) | ((bruto >> 8) & 0xFF));
 }

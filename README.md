@@ -25,7 +25,7 @@ O launcher **não** faz isso automaticamente — mexer no startup/registro do us
 ## Como funciona
 
 ```
-DiscordVpnLauncher.exe            (orquestrador, integridade média, SEM UAC)
+Discord.exe                       (orquestrador, integridade média, SEM UAC)
  │
  ├─ extrai openvpn.exe + wintun.dll para %LocalAppData%\DiscordVpnLauncher\bin
  ├─ confere internet e o país atual (ipinfo.io/country)
@@ -41,8 +41,8 @@ DiscordVpnLauncher.exe            (orquestrador, integridade média, SEM UAC)
  ├─ confirma que o IP realmente não é BR
  ├─ lança o Discord NÃO-elevado (herda integridade média)
  ├─ espera o pipe \\.\pipe\discord-ipc-0 aparecer (o processo subiu)
- ├─ espera o Discord abrir conexão SAINDO pelo IP do túnel, e segura mais 30 s
- │     (é no login que o IP é registrado; o pipe aparece antes disso)
+ ├─ espera uma conexão do Discord pelo IP do túnel SOBREVIVER 6 s (sessão do
+ │     gateway firmada = login concluído = IP registrado), + 5 s de margem
  └─ escreve stop.signal → o broker derruba o túnel, remove o adaptador
                           e restaura as rotas
 ```
@@ -92,7 +92,7 @@ O projeto **compila sem esses arquivos** (emite apenas um aviso), mas o launcher
 dotnet publish DiscordVpnLauncher -c Release
 ```
 
-Saída: `DiscordVpnLauncher/bin/Release/net8.0-windows/win-x64/publish/DiscordVpnLauncher.exe` — self-contained e single-file (~60-70 MB, com o runtime .NET dentro).
+Saída: `DiscordVpnLauncher/bin/Release/net8.0-windows/win-x64/publish/Discord.exe` — self-contained e single-file (~70 MB, com o runtime .NET dentro), com o ícone do Discord.
 
 ---
 
@@ -113,12 +113,16 @@ O launcher procura `%LocalAppData%\Discord\Update.exe` (o stub do Squirrel, que 
 $env:DISCORD_VPN_LAUNCHER_DISCORD = "D:\Discord\Update.exe"
 ```
 
-### Quanto tempo a VPN fica de pé
+### Quanto tempo a VPN fica de pé (e por que isso importa para call)
 
-Uma execução leva cerca de 1 a 1,5 minuto: o túnel só cai depois que o Discord abre uma conexão saindo por ele, mais 30 s de folga para o login terminar. Se o IP registrado ainda sair como brasileiro, aumente a folga:
+**Enquanto o túnel está ativo, todo o seu tráfego passa pelo relay no exterior — o ping em call fica impraticável.** Por isso a janela é a menor possível: o launcher não espera um tempo fixo, ele observa o Discord.
+
+A VPN cai assim que uma conexão do Discord pelo túnel **sobrevive 6 s** (é a sessão do gateway; as conexões de boot morrem em menos de 1 s), mais 5 s de margem. Na prática são ~15 s de VPN depois que o Discord abre, contra os 30 s fixos da versão anterior. O console mostra a contagem regressiva — **espere ela terminar antes de entrar em call**; a última linha é `VPN desligada, ping normal`.
+
+Se algum dia o IP registrado sair como brasileiro, aumente a margem:
 
 ```powershell
-$env:DISCORD_VPN_LAUNCHER_ESPERA = "60"   # segundos, máximo 300
+$env:DISCORD_VPN_LAUNCHER_ESPERA = "20"   # segundos, máximo 300
 ```
 
 ---
