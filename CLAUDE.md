@@ -135,6 +135,16 @@ Self-contained, single-file e `win-x64` já estão no `.csproj` — não precisa
 - **O ajuste do `settings.json` do Discord mora em [desativar-autostart.ps1](installer/desativar-autostart.ps1), não no `[Code]` Pascal.** O Pascal do Inno só lê arquivo como `AnsiString`; reescrever um JSON UTF-8 por ali corromperia acentos na configuração do usuário. O `.iss` extrai o script para o `{tmp}` (`Flags: dontcopy`) e o executa.
 - Desativar o auto-start mexe em **dois** lugares e um sem o outro não resolve: `OPEN_ON_STARTUP` no `settings.json` (fonte da verdade — o Discord recria a chave `Run` a partir dela) e a chave `Run` do registro (que continuaria valendo até o Discord reabrir). E o Discord precisa estar **fechado**, porque reescreve o `settings.json` de memória ao sair.
 - O desinstalador apaga `%LocalAppData%\DiscordVpnLauncher` (`[UninstallDelete]`), que fica fora de `{app}`.
+- **A desinstalação oferece religar o auto-start do Discord.** A instalação alterou a configuração de um programa de terceiros; sair sem desfazer deixaria o usuário com um Discord que não abre mais sozinho e nada na máquina explicando por quê. Pergunta em vez de decidir — nos dois sentidos seria errado decidir sozinho. Roda em `usUninstall`, **antes** da remoção dos arquivos (o `.ps1` ainda precisa existir), e é por isso que ele é instalado em `{app}` em vez de `dontcopy`.
+- **A pergunta só aparece para quem marcou a caixa.** `RegisterPreviousData` grava um marcador na chave de desinstalação; sem ele, a pergunta afirmaria algo falso e um "sim" distraído ligaria o auto-start de quem o mantinha desligado de propósito. Ao ler esse marcador, o nome tem o prefixo **`Inno Setup CodeFile: `** — `SetPreviousData` o acrescenta, e ler pelo nome cru devolve sempre falso, de forma silenciosa (o desinstalador simplesmente não pergunta nada).
+
+Três armadilhas do Inno que só aparecem em compilação ou em runtime, todas já custaram uma rodada:
+
+| Armadilha | Sintoma |
+|---|---|
+| `.iss` sem BOM | acentos quebrados no instalador pronto, **sem** erro de compilação |
+| linha começando com `#` | `Unknown preprocessor directive` — os `#13#10` ficam no fim da linha anterior |
+| `{app}` dentro de comentário `{ }` do Pascal | o `}` fecha o comentário no meio e o texto vira código |
 
 ## Detalhes de implementação fáceis de errar
 

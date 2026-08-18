@@ -390,3 +390,25 @@ A escolha lembrada mora na raiz da pasta de dados, **não** em `work\` — essa 
 Validado com as duas fontes isoladas uma da outra (backup e restauração do registro real), apontando para uma instalação falsa fora do `%LocalAppData%`: as duas acharam, e a variante saiu correta.
 
 Junto veio `--diagnostico`, que imprime o alvo detectado e o estado dos binários sem tocar em nada — pensado para suporte a distância, já que a ferramenta agora roda em máquinas que não são a do autor.
+
+### 16.1 A desinstalação tem que desfazer o que mexeu fora de casa
+
+Teste de desinstalação da 1.2.0: tudo o que o instalador criou saiu — pasta do programa, os dois atalhos, entrada em "Aplicativos instalados" e `%LocalAppData%\DiscordVpnLauncher` com binários e logs. Mas duas coisas ficaram:
+
+- **a inicialização automática do Discord continuou desativada**;
+- o backup `settings.json.bak-vpnlauncher` permaneceu na pasta do Discord.
+
+A primeira é a que importa. Apagar os próprios arquivos é limpeza; manter uma alteração na configuração de **outro programa** depois de sumir da máquina é deixar rastro em software de terceiros — o usuário fica com um Discord que não abre mais junto com o Windows e sem nada que ligue uma coisa à outra, porque o culpado já foi desinstalado.
+
+A desinstalação passou a **perguntar** ("Deseja reativá-la agora?"). Decidir sozinho seria errado nos dois sentidos: religar por conta própria contraria quem gostou do resultado; não oferecer nada contraria quem só queria testar a ferramenta.
+
+Implementação, com os detalhes que não são óbvios:
+
+- O `desativar-autostart.ps1` deixou de ser `dontcopy` e passa a ser **instalado em `{app}`**: a desinstalação precisa dele em disco no momento em que roda. Roda em `usUninstall`, antes da remoção dos arquivos.
+- `-Reativar` devolve `OPEN_ON_STARTUP` para `true` **e** recria a entrada `Run`, localizando o `Update.exe` pelas mesmas fontes do launcher (funciona com Discord em outro HD). Só o JSON não bastaria: o auto-start só voltaria depois de o Discord ser aberto uma vez.
+- `-LimparBackup` vai sempre, mesmo com resposta "não" — o `.bak` é lixo nosso.
+- A pergunta só aparece se **nós** desativamos: `RegisterPreviousData` grava um marcador na chave de desinstalação. Sem ele, quem instalou sem marcar a caixa receberia uma pergunta que afirma algo falso, e um "sim" distraído ligaria um auto-start mantido desligado de propósito.
+
+**Ao ler o marcador, o nome leva o prefixo `Inno Setup CodeFile: `** — o `SetPreviousData` o acrescenta. Ler pelo nome cru devolve sempre falso, e a falha é **silenciosa**: o desinstalador simplesmente não pergunta nada. Só apareceu porque o teste conferia o registro em vez de confiar na tela.
+
+Validado nos dois caminhos, com o estado real da máquina restaurado ao original antes de começar: instalação **sem** a caixa → desinstalação não toca no auto-start; instalação **com** a caixa → desativa e grava o marcador, e a desinstalação restaura a entrada `Run` idêntica à original (inclusive `--process-start-args "--start-inactive"`), com o `settings.json` continuando válido e sem o `.bak`.
