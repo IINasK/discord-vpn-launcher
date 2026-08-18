@@ -345,3 +345,25 @@ Por pedido de uso, o `AssemblyName` virou `Discord` e o exe ganhou o ícone do D
 
 - `Process.GetProcessesByName("Discord")` passa a devolver **o próprio launcher e o broker**. Sem filtro, o passo 3 (matar todos os processos do Discord) mataria o próprio launcher antes de qualquer coisa acontecer. `DiscordController.IgnorarPid` registra o PID próprio e o do broker, e tanto o `MatarTudo` quanto a detecção de tráfego os ignoram — esta última também importa, porque as requisições do próprio launcher ao ipinfo saem pelo túnel e seriam lidas como "o Discord já está conversando".
 - O `RootNamespace` ficou **fixo** em `DiscordVpnLauncher` no `.csproj`. Os `EmbeddedResource` são nomeados a partir dele (`DiscordVpnLauncher.Resources.*`, que é o que `Paths.ExtractEmbeddedBinaries` procura); deixar o namespace seguir o `AssemblyName` renomearia os recursos e quebraria a extração dos binários em runtime, sem erro de compilação.
+
+---
+
+## 16. Instalador (Inno Setup)
+
+Acréscimo ao plano original, que previa distribuição só pelo `.exe` solto. Com outras pessoas usando a ferramenta, um `setup.exe` resolve atalho, ícone, desinstalação e — o mais importante — o **pré-requisito manual da seção 3**, que até aqui dependia de o usuário lembrar de desativar o auto-start do Discord.
+
+`installer/DiscordVpnLauncher.iss`, compilado por `tools/build-installer.ps1` (publica o exe e chama o `ISCC` apontando para o publish, para nunca empacotar um binário velho). Saída: ~25 MB, contra os 75 MB do exe self-contained.
+
+**Restrições que vêm do desenho, não do gosto:**
+
+- `PrivilegesRequired=lowest`. A instalação não pode pedir UAC — instalador elevado faria o atalho e o "executar ao final" herdarem integridade alta, e o Discord rodaria como administrador. É o mesmo motivo do `asInvoker` no manifest.
+- `AppId` fixo, senão cada versão vira uma entrada nova em "Aplicativos instalados".
+- `[UninstallDelete]` precisa apagar `%LocalAppData%\DiscordVpnLauncher` explicitamente: os binários extraídos e os logs ficam fora de `{app}`.
+
+**Desativar o auto-start são dois lugares, e um sem o outro não resolve:** `OPEN_ON_STARTUP` no `%AppData%\discord\settings.json` (fonte da verdade — o Discord recria a entrada do registro a partir dela) e a chave `Run` do `HKCU` (que continuaria valendo até o Discord reabrir). O Discord também precisa estar fechado, porque reescreve o `settings.json` a partir da memória ao sair — daí a confirmação "fechar o Discord agora?".
+
+Essa lógica vive em [installer/desativar-autostart.ps1](installer/desativar-autostart.ps1), extraído para o `{tmp}` na instalação (`Flags: dontcopy`), e **não** no `[Code]` Pascal: o `LoadStringFromFile` do Inno só lê `AnsiString`, e reescrever um JSON UTF-8 por ali corromperia acentos na configuração do usuário. O script também roda sozinho, para quem quiser aplicar depois.
+
+Validado com o `settings.json` real (que **não** tinha a chave `OPEN_ON_STARTUP`, o caminho de inserção), mais os casos com a chave `true`, sem espaço e arquivo `{}` vazio: JSON continua parseável, acentos preservados, sem BOM (o Discord lê com `JSON.parse`, que engasga com BOM). O primeiro teste pegou um bug que teria corrompido a configuração de todo mundo: `Regex::Replace(s, p, r, 1)` — o quarto parâmetro do método **estático** é `RegexOptions`, não contagem, então a chave era injetada em *todo* `{` do arquivo, inclusive dentro de `WINDOW_BOUNDS`.
+
+O setup não é assinado: SmartScreen avisa na primeira execução. Resolver exigiria certificado de code signing pago — aceito, como já era para o `.exe`.

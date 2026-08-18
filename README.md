@@ -94,6 +94,24 @@ dotnet publish DiscordVpnLauncher -c Release
 
 Saída: `DiscordVpnLauncher/bin/Release/net8.0-windows/win-x64/publish/Discord.exe` — self-contained e single-file (~70 MB, com o runtime .NET dentro), com o ícone do Discord.
 
+### 4. Gerar o instalador (opcional)
+
+Para distribuir para outras pessoas, em vez de mandar o `.exe` solto:
+
+```powershell
+winget install JRSoftware.InnoSetup          # uma vez
+powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1
+```
+
+Saída: `installer\Output\DiscordVpnLauncher-Setup-<versão>.exe` (~25 MB — o Inno comprime o self-contained de 75 MB). O instalador:
+
+- **não pede UAC** (`PrivilegesRequired=lowest`) — instala em `%LocalAppData%\Programs\DiscordVpnLauncher`;
+- cria atalho **"Discord"** no Menu Iniciar e, opcionalmente, na área de trabalho;
+- oferece **desativar o início automático do Discord** (o pré-requisito acima), ajustando `settings.json` e a chave `Run` do registro;
+- registra desinstalador em "Aplicativos instalados", que remove também `%LocalAppData%\DiscordVpnLauncher` (binários do OpenVPN e logs).
+
+> O setup **não é assinado**: o SmartScreen avisa na primeira execução (*Mais informações → Executar assim mesmo*). Resolver isso exigiria um certificado de code signing pago.
+
 ---
 
 ## Usar

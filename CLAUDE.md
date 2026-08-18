@@ -125,6 +125,16 @@ dotnet publish DiscordVpnLauncher -c Release
 
 Self-contained, single-file e `win-x64` já estão no `.csproj` — não precisa repetir as flags na linha de comando. Saída: `DiscordVpnLauncher\bin\Release\net8.0-windows\win-x64\publish\DiscordVpnLauncher.exe` (~60-70 MB — o runtime .NET embutido é custo aceito). Target `net8.0-windows` por causa das APIs Win-only.
 
+## Instalador (Inno Setup)
+
+`installer\DiscordVpnLauncher.iss` + `tools\build-installer.ps1` (que publica e chama o `ISCC`). Existe para distribuir a outras pessoas; o `.exe` solto continua funcionando sem instalar nada.
+
+- **`PrivilegesRequired=lowest` é invariante**, pelo mesmo motivo do `asInvoker`: se o instalador rodasse elevado, o atalho e o "executar ao final" herdariam integridade alta e o Discord acabaria como admin.
+- **O `AppId` é fixo** — é o que faz uma nova versão atualizar a instalação existente em vez de criar uma segunda entrada em "Aplicativos instalados".
+- **O ajuste do `settings.json` do Discord mora em [desativar-autostart.ps1](installer/desativar-autostart.ps1), não no `[Code]` Pascal.** O Pascal do Inno só lê arquivo como `AnsiString`; reescrever um JSON UTF-8 por ali corromperia acentos na configuração do usuário. O `.iss` extrai o script para o `{tmp}` (`Flags: dontcopy`) e o executa.
+- Desativar o auto-start mexe em **dois** lugares e um sem o outro não resolve: `OPEN_ON_STARTUP` no `settings.json` (fonte da verdade — o Discord recria a chave `Run` a partir dela) e a chave `Run` do registro (que continuaria valendo até o Discord reabrir). E o Discord precisa estar **fechado**, porque reescreve o `settings.json` de memória ao sair.
+- O desinstalador apaga `%LocalAppData%\DiscordVpnLauncher` (`[UninstallDelete]`), que fica fora de `{app}`.
+
 ## Detalhes de implementação fáceis de errar
 
 - **Parser do CSV do VPNGate** (`https://www.vpngate.net/api/iphone/`, sem login/chave): tolerante a mudanças — colunas resolvidas por nome de cabeçalho, linhas `*` puladas. O base64 é lido do **último campo** da linha, não de um índice fixo: a coluna `Message` pode conter vírgulas e deslocar tudo o que vem depois dela.

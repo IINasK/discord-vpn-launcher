@@ -31,3 +31,6 @@ desktop.ini
 # regerado por dotnet publish - nunca versionar.
 /*.exe
 /*.pdb
+
+# Instaladores gerados (installer/Output/*.exe)
+installer/Output/
