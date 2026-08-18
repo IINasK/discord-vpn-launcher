@@ -8,17 +8,37 @@ O plano de arquitetura completo está em [plano-discord-vpn-launcher.md](plano-d
 
 ---
 
-## ⚠️ Pré-requisito obrigatório: desativar o auto-start do Discord
+## Baixar e instalar
+
+O instalador está em **[Releases](../../releases/latest)** — baixe o `DiscordVpnLauncher-Setup-*.exe` e execute.
+
+Só Windows 10/11 de 64 bits. Não precisa instalar .NET, OpenVPN nem nada: está tudo dentro do arquivo.
+
+**Três avisos vão aparecer, e todos são esperados:**
+
+1. **SmartScreen** ("O Windows protegeu o computador") → *Mais informações* → *Executar assim mesmo*. O instalador não tem assinatura digital paga.
+2. **Windows Defender** pode bloquear com `Behavior:Win32/DefenseEvasion`. É falso positivo, mas o motivo é legítimo: um programa sem assinatura que solta outro executável, se eleva e reescreve rotas de rede tem o mesmo formato de um malware. Para liberar: *Segurança do Windows → Proteção contra vírus e ameaças → Histórico de proteção → Ações → Permitir no dispositivo*.
+3. **Um** prompt de UAC ao usar (é a VPN). O Discord em si **não** deve pedir UAC — se pedir, algo está errado.
+
+Se você não confia em executar isso, [compile você mesmo](#compilar): o código é todo este repositório e o instalador sai de `tools\build-installer.ps1`.
+
+### Como usar
+
+Clique no atalho **Discord** criado pelo instalador (não no Discord original). Espere a contagem regressiva do console terminar — enquanto ela roda, a VPN está de pé e o ping em call fica alto. Quando aparecer `VPN desligada, ping normal`, pode entrar em call normalmente.
+
+---
+
+## ⚠️ Pré-requisito: desativar o auto-start do Discord
 
 O Discord se auto-inicia no login do Windows por padrão. Se isso ficar ligado, **ele abre pelo seu IP real antes do launcher e todo o propósito da ferramenta é perdido**.
 
-Faça uma vez:
+**O instalador oferece desativar isso para você** — deixe a caixa marcada e responda *Sim* quando ele pedir para fechar o Discord. Para fazer à mão:
 
 1. Discord → **Configurações do Usuário** → **Configurações do Windows**
 2. Desligue **"Abrir o Discord"** (*Open Discord* / iniciar com o sistema)
 3. Confira também em **Gerenciador de Tarefas → Inicializar** que não sobrou entrada do Discord
 
-O launcher **não** faz isso automaticamente — mexer no startup/registro do usuário está fora do escopo dele.
+O launcher sozinho (fora do instalador) não mexe nisso.
 
 ---
 
