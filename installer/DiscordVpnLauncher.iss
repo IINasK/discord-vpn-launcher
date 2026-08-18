@@ -1,4 +1,8 @@
-; Instalador do Discord VPN Launcher (Inno Setup 6).
+﻿; Instalador do Discord VPN Launcher (Inno Setup 6).
+;
+; ESTE ARQUIVO PRECISA SER SALVO EM UTF-8 COM BOM. Sem o BOM, o Inno le o .iss
+; como ANSI e todo texto acentuado que aparece na tela do instalador vira
+; caractere quebrado - sem erro de compilacao, so no resultado final.
 ;
 ; Gere com tools\build-installer.ps1 - ele publica o exe e chama o ISCC com o
 ; caminho correto. Compilar este .iss na mao tambem funciona, desde que o
@@ -16,7 +20,7 @@
 ;    instalado e com os atalhos dele intactos.
 
 #define AppNome "Discord VPN Launcher"
-#define AppVersao "1.2.0"
+#define AppVersao "1.2.1"
 #define AppExe "Discord.exe"
 #define AppAutor "Douglas"
 
@@ -32,6 +36,9 @@ AppId={{8F3C2A94-6D51-4E2B-9C77-1B5A0E3D7F42}
 AppName={#AppNome}
 AppVersion={#AppVersao}
 AppPublisher={#AppAutor}
+AppPublisherURL=https://github.com/IINasK/discord-vpn-launcher
+AppSupportURL=https://github.com/IINasK/discord-vpn-launcher/issues
+AppUpdatesURL=https://github.com/IINasK/discord-vpn-launcher/releases
 DefaultDirName={localappdata}\Programs\DiscordVpnLauncher
 DisableProgramGroupPage=yes
 DisableDirPage=auto
@@ -53,8 +60,8 @@ WizardStyle=modern
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Criar um atalho na area de trabalho"; GroupDescription: "Atalhos:"
-Name: "desativarautostart"; Description: "Desativar o inicio automatico do Discord (recomendado)"; GroupDescription: "Configuracao:"
+Name: "desktopicon"; Description: "Criar um atalho na Área de Trabalho"; GroupDescription: "Atalhos adicionais:"
+Name: "desativarautostart"; Description: "Desativar a inicialização automática do Discord (recomendado)"; GroupDescription: "Configuração:"
 
 [Files]
 Source: "{#FonteExe}"; DestDir: "{app}"; DestName: "{#AppExe}"; Flags: ignoreversion
@@ -65,13 +72,13 @@ Source: "{#FonteExe}"; DestDir: "{app}"; DestName: "{#AppExe}"; Flags: ignorever
 Source: "desativar-autostart.ps1"; Flags: dontcopy
 
 [Icons]
-Name: "{autoprograms}\Discord"; Filename: "{app}\{#AppExe}"; Comment: "Abre o Discord por baixo de uma VPN fora do Brasil"
-Name: "{autodesktop}\Discord"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon; Comment: "Abre o Discord por baixo de uma VPN fora do Brasil"
+Name: "{autoprograms}\Discord"; Filename: "{app}\{#AppExe}"; Comment: "Inicia o Discord através de uma VPN fora do Brasil"
+Name: "{autodesktop}\Discord"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon; Comment: "Inicia o Discord através de uma VPN fora do Brasil"
 
 [Run]
 ; runasoriginaluser: garante integridade media mesmo se o instalador tiver sido
 ; aberto elevado por algum motivo. Sem isso o Discord poderia herdar admin.
-Filename: "{app}\{#AppExe}"; Description: "Abrir o Discord pela VPN agora"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\{#AppExe}"; Description: "Iniciar o Discord através da VPN agora"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallDelete]
 ; Binarios do OpenVPN extraidos e logs de sessao. Nao ficam em {app}, entao o
@@ -98,9 +105,11 @@ begin
 
   { O Discord reescreve o settings.json ao fechar: com ele aberto, a alteracao
     seria desfeita no proximo fechamento. }
-  if MsgBox('O Discord precisa estar fechado para esta mudanca valer.' + #13#10 + #13#10 +
-            'Fechar o Discord agora?' + #13#10 +
-            '(Se ele ficar aberto, pode desfazer a alteracao ao ser fechado.)',
+  if MsgBox('É necessário que o Discord esteja fechado para que esta alteração ' +
+            'tenha efeito.' + #13#10 + #13#10 +
+            'Deseja encerrá-lo agora?' + #13#10 + #13#10 +
+            'Caso permaneça aberto, o Discord poderá restaurar a configuração ' +
+            'anterior ao ser encerrado.',
             mbConfirmation, MB_YESNO) = IDYES then
     Argumentos := Argumentos + ' -FecharDiscord';
 
@@ -110,14 +119,21 @@ begin
   { 2 = nenhum settings.json encontrado (Discord instalado em outro lugar, ou
     nunca aberto). A entrada do registro ainda foi removida. }
   if Codigo = 2 then
-    MsgBox('Nao encontrei a configuracao do Discord. A entrada de inicializacao do ' +
-           'Windows foi removida, mas confira tambem em:' + #13#10 + #13#10 +
-           'Discord > Configuracoes > Configuracoes do Windows > "Abrir o Discord".',
+    MsgBox('Não foi possível localizar a configuração do Discord.' + #13#10 + #13#10 +
+           'A entrada de inicialização automática do Windows foi removida. ' +
+           'Recomenda-se verificar também em:' + #13#10 + #13#10 +
+           'Discord > Configurações do Usuário > Configurações do Windows > ' +
+           '"Abrir o Discord".',
            mbInformation, MB_OK)
   else if Codigo <> 0 then
-    MsgBox('Nao foi possivel desativar o inicio automatico do Discord.' + #13#10 + #13#10 +
-           'Desative na mao em: Discord > Configuracoes > Configuracoes do Windows > ' +
-           '"Abrir o Discord". Sem isso, o Discord abre pelo seu IP real antes do launcher.',
+    { Atencao: nenhuma linha pode COMECAR com #. O pre-processador do Inno trata a
+      linha inteira como diretiva e falha com "Unknown preprocessor directive" -
+      por isso os #13#10 ficam sempre no fim da linha anterior. }
+    MsgBox('Não foi possível desativar a inicialização automática do Discord.' + #13#10 + #13#10 +
+           'Desative manualmente em: Discord > Configurações do Usuário > ' +
+           'Configurações do Windows > "Abrir o Discord".' + #13#10 + #13#10 +
+           'Sem essa alteração, o Discord será iniciado com o seu IP real antes ' +
+           'do launcher, anulando a finalidade do programa.',
            mbError, MB_OK);
 end;
 

@@ -106,7 +106,7 @@ internal static class Orchestrator
             // 2. Rede
             var paisOriginal = await ConsultarPaisAsync().ConfigureAwait(false);
             if (paisOriginal is null)
-                return FinalizarComFalha(paths, broker, "sem conexao com a internet");
+                return FinalizarComFalha(paths, broker, "sem conexão com a internet");
 
             Log.Step($"IP atual em {paisOriginal}.");
 
@@ -123,20 +123,20 @@ internal static class Orchestrator
 
             var candidatos = VpnGateClient.SelecionarCandidatos(relays, QuantidadeCandidatos);
             if (candidatos.Count == 0)
-                return FinalizarComFalha(paths, broker, "nenhum relay fora do Brasil disponivel");
+                return FinalizarComFalha(paths, broker, "nenhum servidor fora do Brasil disponível");
 
             Log.Step($"Candidatos: {string.Join(", ", candidatos.Select(c => c.CountryShort))}.");
 
             // 6-7. Configs em disco (o broker le a lista inteira e faz o retry sozinho)
             var gravados = VpnGateClient.GravarConfigs(paths, candidatos);
             if (gravados.Count == 0)
-                return FinalizarComFalha(paths, broker, "nenhum config valido para gravar");
+                return FinalizarComFalha(paths, broker, "nenhuma configuração válida para gravar");
 
             // 8. Broker elevado - unico UAC da sessao
             Log.Step("Subindo o broker elevado (UAC)...");
             broker = ElevationHelper.LaunchBrokerElevated(paths, Environment.ProcessId);
             if (broker is null)
-                return FinalizarComFalha(paths, broker, "elevacao recusada no UAC");
+                return FinalizarComFalha(paths, broker, "permissão de administrador recusada");
 
             DiscordController.IgnorarPid(broker.Id); // tambem se chama Discord.exe
 
@@ -158,18 +158,18 @@ internal static class Orchestrator
             var (paisReal, detalhe) = await ConfirmarPaisAsync(JanelaConfirmacaoIp).ConfigureAwait(false);
             if (paisReal is null)
                 return FinalizarComFalha(paths, broker,
-                    $"sem resposta dos servicos de IP com a VPN ativa ({detalhe})");
+                    $"sem resposta dos serviços de verificação de IP ({detalhe})");
 
             if (paisReal.Equals("BR", StringComparison.OrdinalIgnoreCase))
                 return FinalizarComFalha(paths, broker,
-                    $"o IP continua brasileiro apos {JanelaConfirmacaoIp.TotalSeconds:0}s " +
-                    $"(rotulo do relay dizia {paisTunel})");
+                    $"o IP permaneceu brasileiro após {JanelaConfirmacaoIp.TotalSeconds:0} segundos " +
+                    $"(o servidor estava identificado como {paisTunel})");
 
             Log.Step($"IP confirmado fora do Brasil: {paisReal}.");
 
             // 11. Discord por baixo do tunel, sem elevacao
             if (!DiscordController.Lancar())
-                return FinalizarComFalha(paths, broker, "falha ao lancar o Discord");
+                return FinalizarComFalha(paths, broker, "não foi possível iniciar o Discord");
 
             // 12. Prontidao. O pipe de IPC diz apenas que o PROCESSO subiu - ele
             // aparece segundos antes de o app falar com o gateway do Discord, e era
@@ -266,14 +266,14 @@ internal static class Orchestrator
 
     private static string TraduzirStatus(string status) => status switch
     {
-        "failed:all" => "nenhum dos relays fora do Brasil aceitou conexao",
-        "failed:timeout" => $"a VPN parou de progredir por {TimeoutVpn.TotalSeconds:0}s",
-        "failed:sem-adaptador" => "nao foi possivel criar o adaptador de rede wintun",
-        "failed:sem-openvpn" => "openvpn.exe/wintun.dll nao encontrados",
-        "failed:sem-candidatos" => "o broker nao encontrou configs para tentar",
-        "failed:sem-elevacao" => "o broker subiu sem privilegio de administrador",
-        "failed:broker-morreu" => "o processo elevado encerrou sem conectar",
-        "failed:excecao" => "erro interno no broker (ver work\\broker.log)",
+        "failed:all" => "nenhum dos servidores fora do Brasil aceitou a conexão",
+        "failed:timeout" => $"a VPN parou de responder por {TimeoutVpn.TotalSeconds:0} segundos",
+        "failed:sem-adaptador" => "não foi possível criar o adaptador de rede",
+        "failed:sem-openvpn" => "arquivos do OpenVPN não encontrados",
+        "failed:sem-candidatos" => "nenhuma configuração de servidor foi encontrada",
+        "failed:sem-elevacao" => "o processo da VPN não obteve privilégio de administrador",
+        "failed:broker-morreu" => "o processo da VPN foi encerrado antes de conectar",
+        "failed:excecao" => "erro interno no processo da VPN (consulte work\\broker.log)",
         _ => status,
     };
 

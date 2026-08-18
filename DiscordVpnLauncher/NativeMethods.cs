@@ -44,10 +44,11 @@ internal static class NativeMethods
     public static LocateChoice ShowLocateDiscordPrompt()
     {
         var text =
-            "Nao encontrei a instalacao do Discord nesta maquina.\n\n" +
-            "Isso acontece quando ele esta em outro disco ou em uma pasta fora do padrao.\n\n" +
-            "Sim  = Localizar o Discord (voce aponta o arquivo; eu lembro da proxima vez)\n" +
-            "Nao  = Fechar";
+            "Não foi possível localizar a instalação do Discord neste computador.\n\n" +
+            "Isso ocorre quando ele está instalado em outro disco ou em uma pasta " +
+            "fora do padrão.\n\n" +
+            "Sim  =  Localizar o Discord (você indica o arquivo; a escolha será lembrada)\n" +
+            "Não  =  Fechar";
 
         var result = MessageBoxW(
             IntPtr.Zero,
@@ -148,10 +149,10 @@ internal static class NativeMethods
     public static FailureChoice ShowFailurePopup(string detail)
     {
         var text =
-            "Erro ao conectar em outro pais.\n\n" +
+            "Não foi possível conectar a um servidor fora do Brasil.\n\n" +
             $"Motivo: {detail}\n\n" +
-            "Sim  = Continuar sem VPN (abre o Discord no seu IP real brasileiro)\n" +
-            "Nao  = Fechar (nao abre o Discord)";
+            "Sim  =  Continuar sem VPN (o Discord será aberto com o seu IP real brasileiro)\n" +
+            "Não  =  Fechar (o Discord não será aberto)";
 
         var result = MessageBoxW(
             IntPtr.Zero,

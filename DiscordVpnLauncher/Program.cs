@@ -14,6 +14,18 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        // O console do Windows abre em codepage OEM (850/437 no Brasil): sem esta
+        // troca, todo acento nas mensagens sai como caractere quebrado. Ignora falha
+        // porque a saida pode estar redirecionada para algo que nao aceita a troca -
+        // e nesse caso o texto continua legivel, so sem acento.
+        try
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+        }
+        catch (IOException)
+        {
+        }
+
         if (args.Length > 0 && args[0] is "--help" or "-h" or "/?")
         {
             MostrarAjuda();
@@ -42,17 +54,17 @@ internal static class Program
     {
         var paths = Paths.Default();
 
-        Console.WriteLine("Discord VPN Launcher - diagnostico");
+        Console.WriteLine("Discord VPN Launcher - diagnóstico");
         Console.WriteLine();
         Console.WriteLine($"  Launcher      : {Environment.ProcessPath}");
-        Console.WriteLine($"  Elevado       : {(ElevationHelper.IsElevated() ? "SIM (nao deveria)" : "nao (correto)")}");
+        Console.WriteLine($"  Elevado       : {(ElevationHelper.IsElevated() ? "SIM (não deveria)" : "não (correto)")}");
         Console.WriteLine($"  Discord em    : {DiscordController.DescreverAlvo()}");
-        Console.WriteLine($"  Binarios em   : {paths.BinDir}");
-        Console.WriteLine($"  openvpn.exe   : {(File.Exists(paths.OpenVpnExe) ? "extraido" : "ainda nao extraido")}");
-        Console.WriteLine($"  wintun.dll    : {(File.Exists(paths.WintunDll) ? "extraido" : "ainda nao extraido")}");
+        Console.WriteLine($"  Binários em   : {paths.BinDir}");
+        Console.WriteLine($"  openvpn.exe   : {(File.Exists(paths.OpenVpnExe) ? "extraído" : "ainda não extraído")}");
+        Console.WriteLine($"  wintun.dll    : {(File.Exists(paths.WintunDll) ? "extraído" : "ainda não extraído")}");
         Console.WriteLine($"  Logs em       : {paths.WorkDir}");
         Console.WriteLine();
-        Console.WriteLine("  Se algo aqui estiver errado, e por onde comecar.");
+        Console.WriteLine("  Qualquer item incorreto acima é o ponto de partida da investigação.");
     }
 
     private static void MostrarAjuda()
@@ -61,29 +73,29 @@ internal static class Program
             Discord VPN Launcher
 
               Discord.exe
-                  Sobe uma VPN gratuita fora do Brasil, abre o Discord por baixo dela
-                  e derruba a VPN assim que o Discord termina de se registrar.
+                  Conecta-se a uma VPN gratuita fora do Brasil, inicia o Discord por baixo
+                  dela e encerra a VPN assim que o Discord conclui o registro do IP.
 
               Discord.exe --diagnostico
-                  Mostra onde o Discord foi encontrado e o estado da instalacao,
-                  sem abrir nada. Peca isto primeiro quando alguem relatar problema.
+                  Exibe onde o Discord foi localizado e o estado da instalação, sem
+                  iniciar nada. Solicite este comando primeiro ao diagnosticar problemas.
 
               Discord.exe --broker <workDir> <parentPid> <binDir>
-                  Uso interno: instancia elevada que gerencia o openvpn.exe.
-                  Nao chame isso na mao.
+                  Uso interno: instância elevada que gerencia o openvpn.exe.
+                  Não deve ser executado manualmente.
 
-            Variaveis de ambiente opcionais:
+            Variáveis de ambiente opcionais:
               DISCORD_VPN_LAUNCHER_DISCORD
-                  Caminho do Update.exe (ou Discord.exe) quando a instalacao nao esta
+                  Caminho do Update.exe (ou Discord.exe) quando a instalação não está
                   em %LocalAppData%\Discord.
 
               DISCORD_VPN_LAUNCHER_ESPERA
-                  Segundos de VPN mantidos depois que o Discord comeca a falar pelo
-                  tunel (padrao 30, maximo 300). Aumente se o IP registrado ainda
-                  sair como brasileiro.
+                  Segundos de VPN mantidos após o Discord iniciar a comunicação pelo
+                  túnel (padrão 5, máximo 300). Aumente caso o IP registrado ainda
+                  esteja saindo como brasileiro.
 
-            Pre-requisito: desative o "Abrir o Discord" / inicio automatico do proprio
-            Discord, senao ele sobe com o IP real antes do launcher.
+            Pré-requisito: desative a opção "Abrir o Discord" (inicialização automática
+            do próprio Discord), caso contrário ele será iniciado com o IP real.
             """);
     }
 }
