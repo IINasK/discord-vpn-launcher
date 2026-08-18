@@ -142,7 +142,7 @@ Para conferir o que ele detectou, sem abrir nada:
 ```
 
 ```
-  Discord em    : C:\Users\Douglas\AppData\Local\Discord\Update.exe --processStart Discord.exe
+  Discord em    : C:\Users\voce\AppData\Local\Discord\Update.exe --processStart Discord.exe
   openvpn.exe   : extraido
 ```
 
