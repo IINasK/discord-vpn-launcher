@@ -1,3 +1,4 @@
+using System.Net;
 using System.Diagnostics;
 using System.IO.Pipes;
 
@@ -157,7 +158,57 @@ internal static class DiscordController
             .Select(d => Path.Combine(d, nomeExe))
             .FirstOrDefault(File.Exists);
 
-    /// <summary>Espera o pipe de IPC aparecer; true = Discord inicializou.</summary>
+    /// <summary>
+    /// Espera o Discord ter uma conexao ESTABLISHED saindo pelo IP do tunel.
+    ///
+    /// Este e o sinal que importa, e o pipe de IPC nao serve para ele: o pipe sobe
+    /// junto com o processo, muito antes de o app falar com o gateway - foi por isso
+    /// que o launcher derrubava a VPN cedo demais e o Discord acabava registrando o
+    /// IP real. Ter um socket estabelecido com origem no IP do tunel prova as duas
+    /// coisas de uma vez: o Discord ja esta conversando, e esta conversando por
+    /// dentro da VPN.
+    /// </summary>
+    public static bool EsperarTrafegoPeloTunel(IPAddress ipTunel, TimeSpan timeout)
+    {
+        var limite = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < limite)
+        {
+            var pids = PidsAtivos();
+
+            if (pids.Count > 0)
+            {
+                foreach (var (pid, local) in TcpTable.Estabelecidas())
+                {
+                    if (pids.Contains(pid) && local.Equals(ipTunel))
+                        return true;
+                }
+            }
+
+            Thread.Sleep(500);
+        }
+
+        return false;
+    }
+
+    /// <summary>PIDs de todos os processos do Discord neste instante.</summary>
+    private static HashSet<int> PidsAtivos()
+    {
+        var pids = new HashSet<int>();
+
+        foreach (var nome in new[] { "Discord", "DiscordPTB", "DiscordCanary" })
+        {
+            foreach (var processo in Process.GetProcessesByName(nome))
+            {
+                using (processo)
+                    pids.Add(processo.Id);
+            }
+        }
+
+        return pids;
+    }
+
+    /// <summary>Espera o pipe de IPC aparecer; true = o processo do Discord subiu.</summary>
     public static bool EsperarProntidao(TimeSpan timeout)
     {
         var limite = DateTime.UtcNow + timeout;

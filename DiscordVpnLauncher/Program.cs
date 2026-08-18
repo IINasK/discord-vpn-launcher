@@ -40,10 +40,15 @@ internal static class Program
                   Uso interno: instancia elevada que gerencia o openvpn.exe.
                   Nao chame isso na mao.
 
-            Variavel de ambiente opcional:
+            Variaveis de ambiente opcionais:
               DISCORD_VPN_LAUNCHER_DISCORD
                   Caminho do Update.exe (ou Discord.exe) quando a instalacao nao esta
                   em %LocalAppData%\Discord.
+
+              DISCORD_VPN_LAUNCHER_ESPERA
+                  Segundos de VPN mantidos depois que o Discord comeca a falar pelo
+                  tunel (padrao 30, maximo 300). Aumente se o IP registrado ainda
+                  sair como brasileiro.
 
             Pre-requisito: desative o "Abrir o Discord" / inicio automatico do proprio
             Discord, senao ele sobe com o IP real antes do launcher.

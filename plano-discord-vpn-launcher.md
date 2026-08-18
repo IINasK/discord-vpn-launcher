@@ -2,7 +2,9 @@
 
 ## Objetivo
 
-Um único `.exe` que o usuário abre manualmente. Ele sobe uma VPN gratuita em um servidor **fora do Brasil**, lança o Discord por baixo dessa VPN (para o Discord "fotografar" o IP não-brasileiro na inicialização), e **derruba a VPN** assim que o Discord confirma que subiu. Discord roda **sem privilégio de administrador**.
+Um único `.exe` que o usuário abre manualmente. Ele sobe uma VPN gratuita em um servidor **fora do Brasil**, lança o Discord por baixo dessa VPN (para o Discord "fotografar" o IP não-brasileiro na inicialização), e **derruba a VPN** assim que o Discord termina de se registrar. Discord roda **sem privilégio de administrador**.
+
+A ferramenta só faz sentido por causa de um comportamento confirmado em uso: quando a VPN cai, o Discord reconecta pelo IP real brasileiro e **continua funcionando com o IP não-brasileiro já registrado**. A reconexão não refaz o registro — por isso basta cobrir o login, e não a sessão inteira (ver 15.7).
 
 ---
 
@@ -261,9 +263,9 @@ Três premissas deste plano não se sustentaram na prática. Ficam registradas a
 
 ### 15.1 `openvpn.exe` + `wintun.dll` não bastam (seção 5)
 
-O `openvpn.exe` linka contra as DLLs do OpenSSL: sem elas ele sai com `0xC0000135` (*DLL not found*) **antes de escrever qualquer linha de log** — sintoma que parece "o OpenVPN não iniciou, sem motivo". O conjunto embutido tem 7 arquivos:
+O `openvpn.exe` linka contra as DLLs do OpenSSL: sem elas ele sai com `0xC0000135` (*DLL not found*) **antes de escrever qualquer linha de log** — sintoma que parece "o OpenVPN não iniciou, sem motivo". O conjunto embutido tem 6 arquivos (eram 7 até a 15.4 dispensar o `tapctl.exe`):
 
-`openvpn.exe`, `tapctl.exe`, `wintun.dll`, `libcrypto-3-x64.dll`, `libssl-3-x64.dll`, `libpkcs11-helper-1.dll`, `vcruntime140.dll`
+`openvpn.exe`, `wintun.dll`, `libcrypto-3-x64.dll`, `libssl-3-x64.dll`, `libpkcs11-helper-1.dll`, `vcruntime140.dll`
 
 Como a lista muda entre versões do OpenVPN, o `.csproj` embute `Resources\*` por curinga em vez de listar arquivos. O `tools/get-openvpn-binaries.ps1` monta a pasta sem instalar nada na máquina (`msiexec /a`) e valida a assinatura Authenticode de cada arquivo.
 
@@ -287,3 +289,40 @@ Consequências:
 - **O broker precisa criar o adaptador** com `tapctl create --hardware-id wintun --name DiscordVpnLauncher` antes de tentar os candidatos, e passar `--dev-node` ao OpenVPN. O `tapctl.exe` tem manifest `requireAdministrator`, então só roda elevado — encaixa no broker sem gerar um segundo UAC, já que um filho de processo elevado herda o token.
 - **Matar o OpenVPN não faz o adaptador desaparecer.** A afirmação da seção 7 ("o adaptador wintun some e leva as rotas junto") está errada: matar o processo desfaz as rotas, mas o adaptador persiste. O teardown do broker chama `tapctl delete` explicitamente — é o que faz o teste 6 da seção 12 (adaptador sumiu do `ipconfig`) passar.
 - **O timeout de 45 s da seção 6/9 é curto demais.** Criar o adaptador na primeira vez instala o driver, e o pior caso legítimo é isso mais cinco candidatos de 20 s. O pai passou a usar timeout por **inatividade** (45 s sem mudança de status do broker, que publica `starting`/`trying:N`), com teto absoluto de 3 min.
+
+### 15.4 O `tapctl.exe` não cria o adaptador em máquina sem OpenVPN instalado (corrige 15.3)
+
+A correção anterior funcionava só onde o driver wintun já estava no *driver store*. Em um Windows limpo, `tapctl create --hardware-id wintun` falha com `0xE0000203`: ele cria adaptadores pela SETUPAPI (`DiInstallDevice`), que **exige o driver já instalado** — exatamente o que este projeto quer evitar.
+
+Quem sabe instalar o driver sob demanda é o próprio `wintun.dll`: ele embute o driver assinado e o instala na primeira criação de adaptador (mesmo mecanismo do WireGuard para Windows). Por isso o adaptador passou a ser criado por P/Invoke em [WintunAdapter.cs](DiscordVpnLauncher/WintunAdapter.cs) (`WintunCreateAdapter`), e não mais por processo externo.
+
+Ganho colateral no teardown: **o adaptador tem o tempo de vida do HANDLE**. Fechar o handle o remove, e se o broker morrer de qualquer forma o Windows fecha o handle por ele — o lixo de rede some sozinho, sem depender de um `delete` explícito dar certo.
+
+Com isso o `tapctl.exe` saiu do bundle e do `tools/get-openvpn-binaries.ps1` — são 6 arquivos embutidos, não 7. Uma cópia dele pode ter sobrado em `bin` de uma versão anterior; é inofensiva e nada mais a usa.
+
+### 15.5 A confirmação de país precisa de janela, não de tiro único (seção 6, passo 10)
+
+O passo 10 era "simples e único" de propósito. Na prática ele falha por corrida: quando o OpenVPN escreve `Initialization Sequence Completed`, as rotas e o DNS **acabaram** de ser trocados, e a primeira requisição HTTP costuma morrer no socket — ou sair ainda pela rota antiga e responder `BR`. O resultado é uma sessão descartada com a VPN funcionando perfeitamente (observado com o túnel em JP já completo).
+
+Passou a ser uma **janela de confirmação de 20 s** (2 s de assentamento, tentativas a cada 2 s) sobre uma lista de serviços — `ipinfo.io/country`, `ifconfig.co/country-iso`, `api.country.is` — porque um serviço fora do ar, bloqueado pelo relay ou aplicando rate limit também derrubava a sessão por motivo alheio à VPN. Só falha se a janela inteira passar; `BR` persistente e "nenhum serviço respondeu" são falhas distintas na mensagem ao usuário.
+
+### 15.6 O pai não deixava rastro em disco
+
+Só o broker espelhava log em arquivo. Como o console do pai some quando a janela fecha, toda falha do lado não-elevado (justamente a da 15.5) era invisível na hora do diagnóstico. O pai agora espelha em `work\launcher.log`, criado depois da limpeza da `work\` para não ser apagado no mesmo ciclo.
+
+### 15.7 O pipe de IPC não é sinal de "IP capturado" (seções 6 e 11)
+
+O passo 12 tratava `\.\pipe\discord-ipc-0` como "Discord pronto" e derrubava a VPN em seguida. Medido: o pipe aparece **~5 s** depois do lançamento, e nesse ponto o app ainda nem falou com o gateway — o `launcher.log` de uma sessão com túnel JP confirmado mostra `Discord inicializou sob a VPN` e `tunel desfeito` no mesmo segundo. Ou seja, o IP fotografado era o real, com a VPN tendo funcionado perfeitamente do começo ao fim.
+
+O contraste que fechou o diagnóstico foi o teste manual com Proton VPN (conectar, abrir o Discord, esperar carregar, desconectar): funciona. A diferença não é a VPN — é *quando* ela cai.
+
+O sinal correto tem duas partes, ambas em `Orchestrator.EsperarCapturaDeIp`:
+
+1. **Uma conexão ESTABLISHED do Discord com endereço local igual ao IP do adaptador do túnel** ([TcpTable.cs](DiscordVpnLauncher/TcpTable.cs), via `GetExtendedTcpTable`). Prova as duas coisas de uma vez: o app saiu do boot e está conversando, e a conversa passa por dentro da VPN. Nenhuma API gerenciada responde "por qual interface este processo está falando"; o endereço local da tabela TCP responde. Não exige elevação.
+2. **Uma folga fixa depois disso** (padrão 30 s, ajustável por `DISCORD_VPN_LAUNCHER_ESPERA`), porque o handshake de login continua depois do primeiro socket abrir, e é no login que o IP é registrado.
+
+Nenhuma das duas é fatal: falhando o sinal, o launcher registra o aviso e vai para o teardown assim mesmo — o invariante "o túnel nunca fica aberto" continua acima de tudo.
+
+**O que acontece no teardown, confirmado:** a conexão do Discord cai junto com o túnel (o IP de origem some do adaptador) e ele reconecta pelo IP real brasileiro — continuando a funcionar normalmente, com o IP não-brasileiro já registrado. A reconexão **não** refaz o registro.
+
+Isso deixou de ser risco e virou a premissa validada do produto: é exatamente por isso que basta uma janela curta de VPN cobrindo o login, e não uma VPN permanente. Ver a seção "A sacada" no [CLAUDE.md](CLAUDE.md).

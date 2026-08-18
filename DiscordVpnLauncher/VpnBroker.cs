@@ -24,11 +24,6 @@ internal static class VpnBroker
 
     private const string MarcadorSucesso = "Initialization Sequence Completed";
 
-    /// <summary>Nome do adaptador wintun criado por este launcher, para podermos removê-lo depois.</summary>
-    private const string NomeAdaptador = "DiscordVpnLauncher";
-
-    private static readonly TimeSpan TimeoutTapCtl = TimeSpan.FromSeconds(60);
-
     /// <summary>Linhas do log que significam "este relay nao vai subir; passe para o proximo".</summary>
     private static readonly string[] MarcadoresFatais =
     {
@@ -56,6 +51,7 @@ internal static class VpnBroker
         Log.Step($"Broker iniciado (pai={parentPid}, elevado={ElevationHelper.IsElevated()}).");
 
         Process? openvpn = null;
+        WintunAdapter? adaptador = null;
 
         try
         {
@@ -66,7 +62,7 @@ internal static class VpnBroker
                 return 3;
             }
 
-            if (!File.Exists(paths.OpenVpnExe) || !File.Exists(paths.WintunDll) || !File.Exists(paths.TapCtlExe))
+            if (!File.Exists(paths.OpenVpnExe) || !File.Exists(paths.WintunDll))
             {
                 Log.Error($"Binarios ausentes em {paths.BinDir}.");
                 EscreverStatus(paths, "failed:sem-openvpn");
@@ -83,8 +79,10 @@ internal static class VpnBroker
 
             EscreverStatus(paths, "starting");
 
-            // O adaptador tem que existir ANTES do openvpn: ele nao cria um sozinho.
-            if (!GarantirAdaptador(paths))
+            // O adaptador tem que existir ANTES do openvpn: ele nao cria um sozinho,
+            // apenas procura um pronto e aborta em open_tun se nao achar.
+            adaptador = WintunAdapter.Criar(paths);
+            if (adaptador is null)
             {
                 EscreverStatus(paths, "failed:sem-adaptador");
                 return 7;
@@ -114,96 +112,11 @@ internal static class VpnBroker
         finally
         {
             // Rede de seguranca: qualquer caminho de saida derruba o tunel.
+            // A ordem importa - matar o openvpn primeiro, depois soltar o adaptador.
             DerrubarOpenVpn(openvpn);
-            RemoverAdaptador(paths);
+            adaptador?.Dispose();
             LimparArquivosSensiveis(paths);
             Log.Step("Broker encerrado.");
-        }
-    }
-
-    /// <summary>
-    /// Cria o adaptador wintun se ele ainda nao existir, via tapctl.exe.
-    ///
-    /// Isto e uma correcao sobre o plano original: matar o openvpn.exe NAO faz o
-    /// adaptador desaparecer, e o openvpn tambem nao cria um. Quem cria e remove e o
-    /// tapctl - que exige elevacao, e por isso mora aqui no broker. Como o broker ja
-    /// esta elevado, chamar o tapctl nao gera um segundo UAC.
-    /// </summary>
-    private static bool GarantirAdaptador(Paths paths)
-    {
-        var (codigo, saida) = RodarTapCtl(paths, "list");
-
-        if (codigo == 0 && saida.Contains(NomeAdaptador, StringComparison.OrdinalIgnoreCase))
-        {
-            // Sobrou de uma sessao anterior que nao conseguiu limpar; reaproveita.
-            Log.Info($"Adaptador '{NomeAdaptador}' ja existe; reaproveitando.");
-            return true;
-        }
-
-        Log.Step($"Criando adaptador wintun '{NomeAdaptador}'...");
-        var (codigoCriacao, saidaCriacao) = RodarTapCtl(
-            paths, $"create --hardware-id wintun --name \"{NomeAdaptador}\"");
-
-        if (codigoCriacao == 0)
-        {
-            Log.Info($"Adaptador criado ({saidaCriacao.Trim()}).");
-            return true;
-        }
-
-        Log.Error($"tapctl create falhou (codigo {codigoCriacao}): {saidaCriacao.Trim()}");
-        return false;
-    }
-
-    /// <summary>
-    /// Remove o adaptador no teardown, para o sistema voltar ao estado anterior -
-    /// as rotas associadas a ele vao junto.
-    /// </summary>
-    private static void RemoverAdaptador(Paths paths)
-    {
-        if (!File.Exists(paths.TapCtlExe))
-            return;
-
-        var (codigo, saida) = RodarTapCtl(paths, $"delete \"{NomeAdaptador}\"");
-
-        if (codigo == 0)
-            Log.Info($"Adaptador '{NomeAdaptador}' removido.");
-        else
-            Log.Warn($"Nao foi possivel remover o adaptador (codigo {codigo}): {saida.Trim()}");
-    }
-
-    private static (int Codigo, string Saida) RodarTapCtl(Paths paths, string argumentos)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = paths.TapCtlExe,
-                Arguments = argumentos,
-                WorkingDirectory = paths.BinDir,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-
-            using var processo = Process.Start(psi)
-                ?? throw new InvalidOperationException("Process.Start devolveu null.");
-
-            var stdout = processo.StandardOutput.ReadToEndAsync();
-            var stderr = processo.StandardError.ReadToEndAsync();
-
-            if (!processo.WaitForExit((int)TimeoutTapCtl.TotalMilliseconds))
-            {
-                processo.Kill(entireProcessTree: true);
-                return (-1, "tapctl travou e foi encerrado.");
-            }
-
-            return (processo.ExitCode,
-                    stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult());
-        }
-        catch (Exception ex)
-        {
-            return (-1, ex.Message);
         }
     }
 
@@ -272,7 +185,7 @@ internal static class VpnBroker
         // Aponta para o adaptador que criamos, em vez de deixar o openvpn escolher
         // entre adaptadores que possam existir na maquina por outros motivos.
         startInfo.ArgumentList.Add("--dev-node");
-        startInfo.ArgumentList.Add(NomeAdaptador);
+        startInfo.ArgumentList.Add(WintunAdapter.Nome);
         startInfo.ArgumentList.Add("--log");
         startInfo.ArgumentList.Add(paths.OpenVpnLog);
         startInfo.ArgumentList.Add("--verb");

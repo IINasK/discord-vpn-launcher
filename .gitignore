@@ -26,3 +26,8 @@ stop.signal
 # Windows
 Thumbs.db
 desktop.ini
+
+# Copia do launcher na raiz do projeto (uso manual): ~75 MB de exe self-contained,
+# regerado por dotnet publish - nunca versionar.
+/*.exe
+/*.pdb

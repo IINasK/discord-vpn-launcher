@@ -1,6 +1,8 @@
 # Discord VPN Launcher
 
-Um único `.exe` que sobe uma VPN gratuita em um servidor **fora do Brasil**, abre o Discord por baixo dessa VPN (para o Discord registrar o IP não-brasileiro na inicialização) e **derruba a VPN** assim que o Discord confirma que subiu. O Discord roda **sem privilégio de administrador**.
+Um único `.exe` que sobe uma VPN gratuita em um servidor **fora do Brasil**, abre o Discord por baixo dessa VPN (para o Discord registrar o IP não-brasileiro na inicialização) e **derruba a VPN** assim que o Discord termina de se registrar. O Discord roda **sem privilégio de administrador**.
+
+Ao derrubar a VPN, o Discord reconecta pelo seu IP real brasileiro e **continua funcionando normalmente**, mantendo o IP não-brasileiro que já registrou. É isso que permite usar a VPN só por ~1 minuto, no lugar de deixá-la ligada o tempo todo: sua conexão volta ao normal logo depois.
 
 O plano de arquitetura completo está em [plano-discord-vpn-launcher.md](plano-discord-vpn-launcher.md).
 
@@ -31,14 +33,16 @@ DiscordVpnLauncher.exe            (orquestrador, integridade média, SEM UAC)
  ├─ baixa a lista do VPNGate, descarta os relays BR, grava os 5 melhores em .ovpn
  ├─ relança a si mesmo elevado: --broker …          ← ÚNICO prompt de UAC
  │     └─ broker (integridade alta)
- │          ├─ cria o adaptador wintun com tapctl.exe
+ │          ├─ cria o adaptador wintun pelo wintun.dll (P/Invoke)
  │          ├─ tenta candidato 1, 2, 3… até um subir   ← retry aqui, sem novo UAC
  │          ├─ sinal de sucesso: "Initialization Sequence Completed" no log
  │          └─ vigia o PID do pai e o arquivo stop.signal
  │
  ├─ confirma que o IP realmente não é BR
  ├─ lança o Discord NÃO-elevado (herda integridade média)
- ├─ espera o pipe \\.\pipe\discord-ipc-0 aparecer
+ ├─ espera o pipe \\.\pipe\discord-ipc-0 aparecer (o processo subiu)
+ ├─ espera o Discord abrir conexão SAINDO pelo IP do túnel, e segura mais 30 s
+ │     (é no login que o IP é registrado; o pipe aparece antes disso)
  └─ escreve stop.signal → o broker derruba o túnel, remove o adaptador
                           e restaura as rotas
 ```
@@ -66,15 +70,15 @@ O script **não instala nada** nesta máquina — só baixa e extrai para `Disco
 
 | Arquivo | Origem | Assinado por |
 |---|---|---|
-| `openvpn.exe`, `tapctl.exe` | MSI oficial do OpenVPN 2.6.14, extraído com `msiexec /a` | OpenVPN Inc. |
+| `openvpn.exe` | MSI oficial do OpenVPN 2.6.14, extraído com `msiexec /a` | OpenVPN Inc. |
 | `libcrypto-3-x64.dll`, `libssl-3-x64.dll`, `libpkcs11-helper-1.dll`, `vcruntime140.dll` | mesmo MSI | OpenVPN Inc. |
 | `wintun.dll` | release oficial do [wintun.net](https://www.wintun.net) (projeto WireGuard) | WireGuard LLC |
 
 Três detalhes que o plano original não previa (registrados na seção 15 dele):
 
-- **`openvpn.exe` não roda sozinho.** Sem as DLLs do OpenSSL ele morre com `0xC0000135` (*DLL not found*) antes de imprimir qualquer coisa. Por isso o conjunto tem 7 arquivos, não 2.
+- **`openvpn.exe` não roda sozinho.** Sem as DLLs do OpenSSL ele morre com `0xC0000135` (*DLL not found*) antes de imprimir qualquer coisa. Por isso o conjunto tem 6 arquivos, não 2.
 - **O MSI do OpenVPN não contém `wintun.dll`** (verificado, inclusive com `ADDLOCAL=ALL`) — o instalador trata o driver por outro caminho. O `wintun.dll` vem do upstream, que é a origem do arquivo de qualquer forma.
-- **O `openvpn.exe` não cria o adaptador de rede.** Sem um adaptador pronto ele completa o TLS, recebe o `PUSH_REPLY` e morre com *"There are no TAP-Windows, Wintun or ovpn-dco adapters on this system"*. Daí o `tapctl.exe`: o broker cria o adaptador antes de conectar e o remove no teardown.
+- **O `openvpn.exe` não cria o adaptador de rede.** Sem um adaptador pronto ele completa o TLS, recebe o `PUSH_REPLY` e morre com *"There are no TAP-Windows, Wintun or ovpn-dco adapters on this system"*. Por isso o broker cria o adaptador antes de conectar (chamando o `wintun.dll` direto, que instala o driver embutido sob demanda) e o remove no teardown.
 
 Tudo isso entra no `.exe` como `EmbeddedResource` e é extraído para `%LocalAppData%\DiscordVpnLauncher\bin\` no 1º uso — sem instalador e sem download externo em runtime. O OpenVPN 2.6 usa **wintun** por padrão, o que evita o driver TAP clássico.
 
@@ -109,6 +113,14 @@ O launcher procura `%LocalAppData%\Discord\Update.exe` (o stub do Squirrel, que 
 $env:DISCORD_VPN_LAUNCHER_DISCORD = "D:\Discord\Update.exe"
 ```
 
+### Quanto tempo a VPN fica de pé
+
+Uma execução leva cerca de 1 a 1,5 minuto: o túnel só cai depois que o Discord abre uma conexão saindo por ele, mais 30 s de folga para o login terminar. Se o IP registrado ainda sair como brasileiro, aumente a folga:
+
+```powershell
+$env:DISCORD_VPN_LAUNCHER_ESPERA = "60"   # segundos, máximo 300
+```
+
 ---
 
 ## Diagnóstico
@@ -118,7 +130,8 @@ Tudo fica em `%LocalAppData%\DiscordVpnLauncher\`:
 | Caminho | Conteúdo |
 |---|---|
 | `bin\` | `openvpn.exe` e `wintun.dll` extraídos (reaproveitados entre sessões) |
-| `work\broker.log` | log do broker — a janela dele é oculta, então é aqui que o diagnóstico aparece |
+| `work\broker.log` | log do broker — a janela dele é oculta, então é aqui que o diagnóstico do túnel aparece |
+| `work\launcher.log` | log do processo pai — falhas depois do túnel subir (país, Discord) aparecem aqui |
 | `work\openvpn.log` | log do OpenVPN do candidato ativo |
 | `work\openvpn-candN-falhou.log` | log preservado de cada candidato que não subiu |
 | `work\vpn-status.txt` | canal de status do broker para o pai (`connected:XX`, `failed:all`, …) |
@@ -137,7 +150,7 @@ Get-Content "$env:LOCALAPPDATA\DiscordVpnLauncher\work\broker.log" -Tail 40
 
 Já verificado automaticamente (sem UAC, sem tocar no Discord):
 
-- [x] Extração dos 7 binários embutidos para uma pasta limpa
+- [x] Extração dos 6 binários embutidos para uma pasta limpa
 - [x] `openvpn.exe` executa (dependências resolvidas)
 - [x] Lista do VPNGate baixa e parseia; nenhum candidato `BR`; ordenação por `Score`
 - [x] Configs decodificados com chave inline, país anotado e sem opções que o 2.6 rejeita
@@ -157,5 +170,5 @@ Falta a bateria que exige interação com o UAC (seção 12 do plano):
 
 - **Relays do VPNGate são instáveis.** O retry cobre 5 candidatos; em dia ruim a sessão cai no popup de falha — comportamento esperado.
 - **SmartScreen / antivírus.** Um `.exe` self-extracting que solta o `openvpn.exe` e altera rotas de rede costuma ser sinalizado. Para uso próprio, basta liberar; para distribuir, seria necessário assinatura de código.
-- **A premissa central** é que o Discord "fotografa" o IP uma única vez, na inicialização. Todo o valor da ferramenta depende disso.
+- **A premissa central** é que o Discord "fotografa" o IP uma única vez, na inicialização — e a reconexão que acontece quando a VPN cai **não** substitui esse registro (confirmado em uso). Todo o valor da ferramenta depende disso: é o que torna suficiente uma janela curta de VPN cobrindo só o login.
 - **Não rode o launcher como administrador.** Ele avisa se isso acontecer: o Discord herdaria integridade alta e passaria a rodar como admin (arrastar-e-soltar arquivos para a janela, por exemplo, deixa de funcionar).

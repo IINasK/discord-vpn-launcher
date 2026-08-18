@@ -92,14 +92,12 @@ Assert-Assinatura $openvpn.FullName "OpenVPN"
 Publicar $openvpn.FullName "openvpn.exe"
 
 # openvpn.exe nao roda sozinho: sem estas DLLs ele morre com 0xC0000135
-# (DLL_NOT_FOUND) antes de imprimir qualquer coisa.
+# (DLL_NOT_FOUND) antes de imprimir qualquer coisa. Todas saem do mesmo bin\ do MSI.
 #
-# tapctl.exe tambem e obrigatorio: o openvpn.exe NAO cria o adaptador wintun por
-# conta propria - ele aborta com "There are no TAP-Windows, Wintun or ovpn-dco
-# adapters on this system", mesmo elevado. Quem cria o adaptador e o tapctl.
-#
-# Todos saem do mesmo bin\ do MSI.
-foreach ($nome in @("tapctl.exe", "libcrypto-3-x64.dll", "libssl-3-x64.dll",
+# O tapctl.exe do MSI NAO e usado: ele cria adaptadores via SETUPAPI, o que exige o
+# driver ja no driver store da maquina. Quem cria o adaptador aqui e o proprio
+# wintun.dll (ver WintunAdapter.cs), que instala o driver embutido sob demanda.
+foreach ($nome in @("libcrypto-3-x64.dll", "libssl-3-x64.dll",
                     "libpkcs11-helper-1.dll", "vcruntime140.dll")) {
     $origem = Get-ChildItem $extraido -Filter $nome -Recurse -File | Select-Object -First 1
     if (-not $origem) { throw "$nome nao encontrado no MSI extraido." }

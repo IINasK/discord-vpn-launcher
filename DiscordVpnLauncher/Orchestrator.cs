@@ -17,7 +17,23 @@ internal static class Orchestrator
     /// <summary>Teto absoluto da fase de conexao, mesmo com o broker progredindo.</summary>
     private static readonly TimeSpan TimeoutVpnTotal = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan TimeoutDiscord = TimeSpan.FromSeconds(30);
+
+    /// <summary>Prazo para o Discord abrir uma conexao saindo pelo IP do tunel.</summary>
+    private static readonly TimeSpan TimeoutTrafegoDiscord = TimeSpan.FromSeconds(60);
+
+    /// <summary>Tempo de tunel mantido depois disso, para o login terminar.</summary>
+    private static readonly TimeSpan FolgaPadrao = TimeSpan.FromSeconds(30);
+
+    /// <summary>Ajuste da folga sem recompilar, em segundos.</summary>
+    private const string EnvFolga = "DISCORD_VPN_LAUNCHER_ESPERA";
     private static readonly TimeSpan TimeoutIpinfo = TimeSpan.FromSeconds(5);
+
+    /// <summary>Prazo total para confirmar que o IP publico ficou fora do Brasil.</summary>
+    private static readonly TimeSpan JanelaConfirmacaoIp = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan IntervaloEntreTentativasIp = TimeSpan.FromSeconds(2);
+
+    /// <summary>Respiro entre o fim do OpenVPN e a 1a consulta, para as rotas assentarem.</summary>
+    private static readonly TimeSpan EsperaAssentarRotas = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan TimeoutTeardown = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan TimeoutPipeSumir = TimeSpan.FromSeconds(5);
 
@@ -62,6 +78,10 @@ internal static class Orchestrator
             // 1. Ambiente + binarios embutidos
             paths.EnsureDirectories();
             paths.CleanWorkDir();
+
+            // Espelha o console em disco so depois da limpeza, senao o arquivo da
+            // sessao atual seria apagado logo apos ser criado.
+            Log.MirrorTo(paths.LauncherLog);
 
             var erroExtracao = paths.ExtractEmbeddedBinaries();
             if (erroExtracao is not null)
@@ -112,13 +132,22 @@ internal static class Orchestrator
             var paisTunel = status["connected:".Length..];
             Log.Step($"VPN conectada ({paisTunel}).");
 
-            // 10. Confirmar de fato o pais - o rotulo do VPNGate pode mentir
-            var paisReal = await ConsultarPaisAsync().ConfigureAwait(false);
+            // 10. Confirmar de fato o pais - o rotulo do VPNGate pode mentir.
+            //
+            // Uma tentativa unica aqui e cedo demais: no instante em que o OpenVPN
+            // escreve "Initialization Sequence Completed" as rotas e o DNS acabaram de
+            // ser trocados, e a primeira requisicao costuma morrer no socket (ou sair
+            // ainda pela rota antiga e responder BR). Por isso a confirmacao insiste
+            // dentro de uma janela em vez de decidir pelo primeiro resultado.
+            var (paisReal, detalhe) = await ConfirmarPaisAsync(JanelaConfirmacaoIp).ConfigureAwait(false);
             if (paisReal is null)
-                return FinalizarComFalha(paths, broker, "sem resposta do ipinfo com a VPN ativa");
+                return FinalizarComFalha(paths, broker,
+                    $"sem resposta dos servicos de IP com a VPN ativa ({detalhe})");
 
             if (paisReal.Equals("BR", StringComparison.OrdinalIgnoreCase))
-                return FinalizarComFalha(paths, broker, $"o IP continua brasileiro (rotulo dizia {paisTunel})");
+                return FinalizarComFalha(paths, broker,
+                    $"o IP continua brasileiro apos {JanelaConfirmacaoIp.TotalSeconds:0}s " +
+                    $"(rotulo do relay dizia {paisTunel})");
 
             Log.Step($"IP confirmado fora do Brasil: {paisReal}.");
 
@@ -126,12 +155,16 @@ internal static class Orchestrator
             if (!DiscordController.Lancar())
                 return FinalizarComFalha(paths, broker, "falha ao lancar o Discord");
 
-            // 12. Prontidao pelo pipe de IPC
+            // 12. Prontidao. O pipe de IPC diz apenas que o PROCESSO subiu - ele
+            // aparece segundos antes de o app falar com o gateway do Discord, e era
+            // por isso que a VPN caia antes da captura do IP acontecer.
             if (DiscordController.EsperarProntidao(TimeoutDiscord))
-                Log.Step("Discord inicializou sob a VPN.");
+                Log.Step("Processo do Discord de pe.");
             else
                 Log.Warn($"O Discord nao sinalizou prontidao em {TimeoutDiscord.TotalSeconds:0}s; " +
-                         "derrubando a VPN de qualquer forma.");
+                         "seguindo assim mesmo.");
+
+            EsperarCapturaDeIp();
 
             // 13-14. Teardown
             PararVpn(paths, broker);
@@ -228,26 +261,204 @@ internal static class Orchestrator
     };
 
     /// <summary>
-    /// GET https://ipinfo.io/country. Cria um HttpClient novo a cada chamada de
-    /// proposito: reaproveitar conexao depois de subir o tunel devolveria a resposta
-    /// pela rota antiga.
+    /// Servicos de geolocalizacao por IP, tentados nesta ordem. Ha mais de um porque
+    /// um deles pode estar fora do ar, bloqueado no relay ou aplicando rate limit -
+    /// e nesse caso a sessao inteira seria descartada por um motivo que nada tem a
+    /// ver com a VPN. Todos respondem o codigo de duas letras em texto puro, exceto
+    /// api.country.is, que responde JSON (ver ExtrairPais).
+    /// </summary>
+    private static readonly string[] ServicosDePais =
+    {
+        "https://ipinfo.io/country",
+        "https://ifconfig.co/country-iso",
+        "https://api.country.is/",
+    };
+
+    /// <summary>
+    /// Uma consulta simples, usada antes de subir o tunel. Devolve null se nenhum
+    /// servico respondeu.
     /// </summary>
     private static async Task<string?> ConsultarPaisAsync()
     {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeoutIpinfo };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("DiscordVpnLauncher/1.0");
+        var (pais, erro) = await TentarPaisAsync().ConfigureAwait(false);
 
-            var resposta = await http.GetStringAsync("https://ipinfo.io/country").ConfigureAwait(false);
-            var pais = resposta.Trim().ToUpperInvariant();
-            return pais.Length is 2 ? pais : null;
-        }
-        catch (Exception ex)
+        if (pais is null)
+            Log.Warn($"Nenhum servico de IP respondeu ({erro}).");
+
+        return pais;
+    }
+
+    /// <summary>
+    /// Insiste na consulta ate obter um pais fora do Brasil ou estourar a janela.
+    ///
+    /// Devolve (null, motivo) quando nenhum servico respondeu na janela inteira, e
+    /// ("BR", motivo) quando responderam mas o IP continua brasileiro - sao falhas
+    /// diferentes para o usuario, entao nao podem colapsar no mesmo retorno.
+    /// </summary>
+    private static async Task<(string? Pais, string Detalhe)> ConfirmarPaisAsync(TimeSpan janela)
+    {
+        // As rotas acabaram de ser reescritas; um respiro antes da primeira tentativa
+        // evita queimar uma volta inteira em erro de socket.
+        await Task.Delay(EsperaAssentarRotas).ConfigureAwait(false);
+
+        var limite = DateTime.UtcNow + janela;
+        var tentativa = 0;
+        string? ultimoPais = null;
+        var ultimoMotivo = "nenhuma tentativa concluida";
+
+        while (true)
         {
-            Log.Warn($"ipinfo indisponivel: {ex.Message}");
-            return null;
+            tentativa++;
+            var (pais, erro) = await TentarPaisAsync().ConfigureAwait(false);
+
+            if (pais is not null && !pais.Equals("BR", StringComparison.OrdinalIgnoreCase))
+                return (pais, $"confirmado na tentativa {tentativa}");
+
+            if (pais is not null)
+            {
+                ultimoPais = pais;
+                ultimoMotivo = "as consultas continuam saindo pelo IP brasileiro";
+                Log.Warn($"Tentativa {tentativa}: ainda BR; as rotas do tunel podem nao ter assentado.");
+            }
+            else
+            {
+                ultimoMotivo = erro;
+                Log.Warn($"Tentativa {tentativa}: {erro}");
+            }
+
+            if (DateTime.UtcNow >= limite)
+                return (ultimoPais, ultimoMotivo);
+
+            await Task.Delay(IntervaloEntreTentativasIp).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Uma volta pelos servicos, devolvendo o primeiro que responder. Cria um
+    /// HttpClient novo a cada chamada de proposito: reaproveitar conexao depois de
+    /// subir o tunel devolveria a resposta pela rota antiga.
+    /// </summary>
+    private static async Task<(string? Pais, string Erro)> TentarPaisAsync()
+    {
+        var erros = new List<string>();
+
+        foreach (var url in ServicosDePais)
+        {
+            var host = new Uri(url).Host;
+
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeoutIpinfo };
+                http.DefaultRequestHeaders.UserAgent.ParseAdd("DiscordVpnLauncher/1.0");
+
+                var resposta = await http.GetStringAsync(url).ConfigureAwait(false);
+                var pais = ExtrairPais(resposta);
+
+                if (pais is not null)
+                    return (pais, string.Empty);
+
+                erros.Add($"{host}: resposta inesperada");
+            }
+            catch (Exception ex)
+            {
+                erros.Add($"{host}: {MensagemRaiz(ex)}");
+            }
+        }
+
+        return (null, string.Join("; ", erros));
+    }
+
+    /// <summary>
+    /// Aceita tanto o texto puro ("JP") quanto o JSON do api.country.is
+    /// ({"ip":"...","country":"JP"}).
+    /// </summary>
+    private static string? ExtrairPais(string resposta)
+    {
+        var texto = resposta.Trim();
+
+        if (texto.Length is 2 && texto.All(char.IsAsciiLetter))
+            return texto.ToUpperInvariant();
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            texto, "\"country\"\\s*:\\s*\"([A-Za-z]{2})\"");
+
+        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
+    }
+
+    /// <summary>
+    /// A mensagem util fica na excecao mais interna: HttpRequestException envolve a
+    /// SocketException, e e o texto dela ("Nenhum host conhecido", "conexao
+    /// recusada") que diz se o problema foi DNS ou rota.
+    /// </summary>
+    private static string MensagemRaiz(Exception ex)
+    {
+        var atual = ex;
+        while (atual.InnerException is not null)
+            atual = atual.InnerException;
+
+        // Em timeout, o HttpClient lanca TaskCanceledException com TimeoutException
+        // dentro, e a mensagem crua ("A operacao foi cancelada") nao diz nada.
+        return atual is TimeoutException or OperationCanceledException
+            ? $"sem resposta em {TimeoutIpinfo.TotalSeconds:0}s"
+            : atual.Message;
+    }
+
+    /// <summary>
+    /// Segura o tunel ate o Discord ter de fato registrado o IP nos servidores dele.
+    ///
+    /// Sao duas esperas, e nenhuma e decorativa:
+    ///
+    /// 1. Uma conexao ESTABLISHED do Discord com origem no IP do adaptador do tunel.
+    ///    Prova que o app passou do "processo subiu" para "esta conversando", e que a
+    ///    conversa sai por dentro da VPN.
+    /// 2. Uma folga fixa depois disso, porque o handshake de login continua por mais
+    ///    alguns segundos apos o primeiro socket abrir - e e no login que o IP e
+    ///    fotografado.
+    ///
+    /// Nenhuma das duas e fatal: se o sinal nao vier, o launcher segue para o
+    /// teardown do mesmo jeito (o invariante e a VPN nunca ficar aberta).
+    /// </summary>
+    private static void EsperarCapturaDeIp()
+    {
+        var ipTunel = WintunAdapter.EnderecoIpv4();
+
+        if (ipTunel is null)
+        {
+            Log.Warn("Nao foi possivel identificar o IP do tunel; " +
+                     "sem como confirmar que o Discord saiu por ele.");
+        }
+        else if (DiscordController.EsperarTrafegoPeloTunel(ipTunel, TimeoutTrafegoDiscord))
+        {
+            Log.Step($"Discord conectado aos servidores por dentro do tunel (origem {ipTunel}).");
+        }
+        else
+        {
+            Log.Warn($"Em {TimeoutTrafegoDiscord.TotalSeconds:0}s o Discord nao abriu " +
+                     $"nenhuma conexao pelo tunel ({ipTunel}). O IP capturado pode ser o real.");
+        }
+
+        var folga = FolgaAposConexao();
+        Log.Step($"Segurando a VPN por mais {folga.TotalSeconds:0}s para o login concluir...");
+        Thread.Sleep(folga);
+    }
+
+    /// <summary>
+    /// Quanto tempo manter o tunel depois de o Discord comecar a falar. O default
+    /// vem de teste manual (VPN de pe ate o app carregar por inteiro); a variavel de
+    /// ambiente existe para ajustar sem recompilar, ja que o tempo certo depende da
+    /// maquina e da conexao.
+    /// </summary>
+    private static TimeSpan FolgaAposConexao()
+    {
+        var bruto = Environment.GetEnvironmentVariable(EnvFolga);
+
+        if (int.TryParse(bruto, out var segundos) && segundos is >= 0 and <= 300)
+            return TimeSpan.FromSeconds(segundos);
+
+        if (!string.IsNullOrWhiteSpace(bruto))
+            Log.Warn($"{EnvFolga}='{bruto}' ignorado (esperado: 0 a 300 segundos).");
+
+        return FolgaPadrao;
     }
 
     private static void PararVpn(Paths paths, Process? broker)

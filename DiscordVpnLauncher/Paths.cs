@@ -22,17 +22,19 @@ internal sealed class Paths
     public string OpenVpnExe => Path.Combine(BinDir, "openvpn.exe");
     public string WintunDll => Path.Combine(BinDir, "wintun.dll");
 
-    /// <summary>
-    /// Utilitario que cria/remove o adaptador de rede. O openvpn.exe NAO cria o
-    /// adaptador wintun sozinho: sem um adaptador pronto ele aborta com "There are
-    /// no TAP-Windows, Wintun or ovpn-dco adapters on this system".
-    /// </summary>
-    public string TapCtlExe => Path.Combine(BinDir, "tapctl.exe");
+    // Nao ha TapCtlExe: o adaptador e criado pelo proprio wintun.dll (ver
+    // WintunAdapter). O tapctl.exe do MSI depende do driver ja instalado na maquina.
 
     public string VpnStatusFile => Path.Combine(WorkDir, "vpn-status.txt");
     public string StopSignalFile => Path.Combine(WorkDir, "stop.signal");
     public string OpenVpnLog => Path.Combine(WorkDir, "openvpn.log");
     public string BrokerLog => Path.Combine(WorkDir, "broker.log");
+
+    /// <summary>
+    /// Espelho do console do pai. O console dele e visivel, mas some quando a janela
+    /// fecha - e o diagnostico de uma falha costuma ser lido depois disso.
+    /// </summary>
+    public string LauncherLog => Path.Combine(WorkDir, "launcher.log");
 
     private Paths(string root, string binDir, string workDir)
     {
@@ -155,8 +157,8 @@ internal sealed class Paths
                 return error;
         }
 
-        // O broker depende destes tres por nome; os demais sao dependencias deles.
-        var faltando = new[] { OpenVpnExe, WintunDll, TapCtlExe }
+        // O broker depende destes dois por nome; os demais sao dependencias deles.
+        var faltando = new[] { OpenVpnExe, WintunDll }
             .Where(p => !File.Exists(p))
             .Select(Path.GetFileName)
             .ToList();
