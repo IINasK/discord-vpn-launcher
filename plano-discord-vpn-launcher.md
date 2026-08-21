@@ -57,7 +57,7 @@ exe --modo-orquestrador  (integridade média, SEM UAC)
  └─ finally: garante o sinal de stop mesmo se der exceção
 ```
 
-**Consequência de design:** todo o retry de relay acontece *dentro do broker*, para manter **1 UAC só**. Por isso o pai entrega uma **lista de candidatos** (ex.: os 5 melhores `!= BR`), não um único config.
+**Consequência de design:** todo o retry de relay acontece *dentro do broker*, para manter **1 UAC só**. Por isso o pai entrega uma **lista de candidatos** (5 relays `!= BR`, ordenados do mais perto do Brasil para o mais longe), não um único config.
 
 ---
 
@@ -126,9 +126,9 @@ DiscordVpnLauncher/
 
 1. **Preparar ambiente.** Criar `%LocalAppData%\DiscordVpnLauncher\` (subpastas `bin`, `work`). Extrair `openvpn.exe`/`wintun.dll` para `bin\` se faltarem.
 2. **Checar rede básica.** Um ping/HTTP rápido (ex.: `ipinfo.io`) para confirmar internet. Sem rede → popup de falha direto.
-3. **Matar Discord aberto.** Encerrar **todos** os processos `Discord.exe` (ele roda em vários). Sem isso, relançar só foca a janela existente → sem re-captura de IP.
+3. **Matar Discord aberto.** Encerrar **todos** os processos `Discord.exe` (ele roda em vários). Sem isso, relançar só foca a janela existente → sem re-captura de IP. **Nenhum processo encerrado → pular direto para o passo 4**, sem esperar o pipe sumir: o `discord-ipc-0` pertence ao processo do Discord e morre com ele, então sem Discord aberto não há pipe órfão a aguardar — ver 15.12.
 4. **Baixar lista VPNGate.** `GET https://www.vpngate.net/api/iphone/` (CSV). Sem login, sem chave.
-5. **Filtrar e ranquear.** Descartar linhas com `CountryShort == "BR"`. Ordenar por `Score`/uptime (ou menor `Ping`). Pegar os **top N (≈5)** candidatos.
+5. **Filtrar e ranquear.** Descartar linhas com `CountryShort == "BR"`. Ordenar pela preferência de país (`VpnGateClient.PaisesPorProximidade`): **`US` primeiro**, o resto por distância geográfica até o Brasil; `Score`/uptime e depois `Ping` desempatam *dentro* do mesmo país. Pegar os **top N (≈5)**, com no máximo **3 candidatos do mesmo país** e o último slot reservado ao melhor `Score` da lista inteira como rede de segurança — ver 15.11 e 15.12.
 6. **Se lista `!= BR` vazia** → popup de falha (raro, mas trate).
 7. **Decodificar configs.** Cada candidato tem o `.ovpn` inteiro em base64 na última coluna (`OpenVPN_ConfigData_Base64`), com CA/cert/key inline — self-contained, sem arquivos extras. Decodificar e gravar `work\cand1.ovpn`, `cand2.ovpn`, ...
 8. **Subir o broker (1 UAC).** Relançar a si mesmo elevado: `exe --broker <workDir> <pidDoPai>`. O `runas` dispara **um** UAC.
@@ -136,8 +136,10 @@ DiscordVpnLauncher/
    - `connected:<país>` → seguir.
    - `failed:all` ou **timeout** (ex.: 45 s) → popup de falha.
 10. **Confirmar país (ipinfo).** `GET https://ipinfo.io/country`. Se `!= BR` → ok. Se `== BR` (label do VPNGate mentiu) → tratar como falha → popup. *(Passo simples e único; não entra no loop de retry, para não complicar.)*
+10b. **Estabilizar antes de lançar.** Respiro fixo (5 s, `DISCORD_VPN_LAUNCHER_ESTABILIZACAO`) e então **duas checagens seguidas** — adaptador do túnel com IPv4 + país `!= BR` — dentro de uma janela de 30 s. Falha isolada zera o contador; estourar a janela é falha de sessão (popup). Uma confirmação única prova que o túnel *chegou* a subir, não que ele está firme — ver 15.12.
 11. **Lançar Discord (não-elevado).** Via stub do Squirrel: `%LocalAppData%\Discord\Update.exe --processStart Discord.exe` (aponta sempre para a versão atual). `UseShellExecute` normal → herda integridade média do pai.
 12. **Esperar Discord pronto.** Poll pela existência de `\\.\pipe\discord-ipc-0` (timeout ≈ 30 s). Apareceu = inicializou.
+12b. **Popup de desligamento manual.** `MessageBox` com um botão **OK** ("desligar a VPN agora"), exibido depois da captura de IP. Quem está na frente da tela é a única parte do sistema que enxerga login pendente, update ou 2FA. Teto de 10 min (`DISCORD_VPN_LAUNCHER_TETO_MANUAL`, `0` desativa o popup): estourado, o dialogo é dispensado por `WM_COMMAND`/`IDOK` e o teardown segue — ver 15.12.
 13. **Derrubar a VPN.** Escrever `work\stop.signal`. O broker mata o OpenVPN, restaura rotas, apaga configs e sai.
 14. **`finally`:** garantir que `stop.signal` foi escrito mesmo em caso de exceção, para nunca deixar túnel aberto.
 
@@ -412,3 +414,44 @@ Implementação, com os detalhes que não são óbvios:
 **Ao ler o marcador, o nome leva o prefixo `Inno Setup CodeFile: `** — o `SetPreviousData` o acrescenta. Ler pelo nome cru devolve sempre falso, e a falha é **silenciosa**: o desinstalador simplesmente não pergunta nada. Só apareceu porque o teste conferia o registro em vez de confiar na tela.
 
 Validado nos dois caminhos, com o estado real da máquina restaurado ao original antes de começar: instalação **sem** a caixa → desinstalação não toca no auto-start; instalação **com** a caixa → desativa e grava o marcador, e a desinstalação restaura a entrada `Run` idêntica à original (inclusive `--process-start-args "--start-inactive"`), com o `settings.json` continuando válido e sem o `.bak`.
+
+### 15.11 O ping da call segue o IP registrado, não o túnel (seção 6, passo 5)
+
+Sessão de 18/08/2026: o launcher rodou limpo — `connected:JP` às 23:00:13, IP confirmado fora do BR, sessão do Discord firmada pelo túnel, teardown completo às 23:00:40 (`openvpn.exe encerrado`, `Adaptador 'DiscordVpnLauncher' removido`). Um minuto depois, já sem VPN nenhuma, a call marcava **304 ms**.
+
+Não era vazamento. Conferido na máquina com o script encerrado: nenhum `openvpn.exe`, nenhum adaptador wintun, uma única rota padrão pelo gateway de casa, IP público `177.33.26.19` (Claro/SP, `BR`) — e o painel de transporte do Discord mostrando esse mesmo IP como *Local Address*. A rede voltou ao normal exatamente como projetado.
+
+**O que não volta é a região de voz.** O Discord escolhe o servidor de mídia a partir do IP registrado no login, e essa escolha sobrevive ao teardown junto com o registro que a ferramenta existe para produzir. Com um relay japonês, o usuário fica falando com um servidor no Japão pela internet brasileira: ~300 ms, permanentes até o próximo login.
+
+Ou seja, a escolha do relay não é indiferente, como o plano original assumia ao ranquear só por `Score`. O país do relay é o país da região de voz da sessão inteira. E o ranking por `Score` puro entregava sempre o pior caso possível: a lista do VPNGate é dominada pelo Japão (na medição, 52 de 97 relays JP e 27 KR), então os 5 candidatos saíam `JP, JP, JP, JP, JP` — o ponto mais distante do Brasil no mapa.
+
+A seleção passou a ordenar por **distância até o Brasil** (`PaisesPorProximidade`, da América do Sul ao Extremo Oriente), com `Score`/`Ping` desempatando dentro do mesmo país. Um relay no Chile registra um IP tão `!= BR` quanto um japonês — a diferença é o ping que fica depois.
+
+Duas decisões que sustentam isso:
+
+- **O último slot fica reservado ao melhor `Score` da lista inteira.** Priorizar proximidade sem rede de segurança troca "ping ruim" por "sessão falhou": se a vizinhança do Brasil só tiver relays moribundos, o retry do broker gasta os 5 candidatos e cai no popup. Melhor subir longe do que não subir.
+- **A latência do próprio túnel não entra na conta.** Ele vive menos de um minuto e só precisa carregar o login; o que se otimiza aqui é o que sobra *depois* dele.
+
+Efeito medido sobre a mesma lista de 97 relays: `JP, JP, JP, JP, JP` virou `US, UA, BY, RU, JP` — o `US` (score 1,9M, ping 3 ms) na frente, o `JP` de maior score guardado como reserva no fim.
+
+---
+
+### 15.12 Quatro ajustes de fluxo pedidos em uso real (seções 6 e 9)
+
+Depois de rodar o launcher no dia a dia, quatro pontos do fluxo mudaram. Nenhum deles altera a sacada central (IP fotografado uma vez, túnel curto), mas três deles mexem em tempo — e tempo aqui é ping cobrado do usuário.
+
+**1. Kill do Discord com zero processos vira no-op (passo 3).** O passo esperava até 5 s pelo `discord-ipc-0` sumir depois do kill. Só que o pipe é do processo do Discord e morre junto com ele: sem Discord aberto, não existe pipe órfão a aguardar. E "sem Discord aberto" é justamente o caso comum de quem seguiu o pré-requisito e desativou o início automático. A espera saiu quando `MatarTudo()` devolve `0`; com 1+ processos encerrados ela continua, porque aí o pipe pode mesmo demorar a cair.
+
+**2. `US` na frente da ordem de conexão (passo 5).** 15.11 ordenou por distância até o Brasil, e na prática a vizinhança sul-americana entrega pouco: são um ou dois relays, quase sempre fora do ar, e cada um deles gasta uma tentativa de 20 s do broker antes de a sessão chegar em algo que conecta. Os EUA são o meio-termo real — ~120 ms de US East contra ~300 ms do Japão, com a única oferta grande e estável de relays da lista. `US` passou a ser o primeiro item de `PaisesPorProximidade`; o resto da ordem por distância ficou como estava.
+
+Junto veio um teto de **3 candidatos por país** (`MaximoPorPais`): com 15 relays US na lista, sem teto os 5 slots sairiam todos dos EUA e o retry deixaria de ser retry — uma rota ruim até o país derrubaria a sessão sem que nenhuma alternativa tivesse sido tentada. A seleção faz duas passadas sobre a mesma ordem: a primeira respeita o teto, a segunda preenche as vagas que sobraram quando não há países suficientes (lista só-JP continua rendendo 5 candidatos JP). Sobre uma lista sintética no formato da real (52 JP, 15 US, 8 KR, 1 UY, 1 CL), o resultado é `US, US, US, UY, JP` — preferência, variedade de retry e a reserva de maior `Score` no fim.
+
+**3. Estabilização entre conectar e abrir o Discord (passo 10b).** `Initialization Sequence Completed` mais uma confirmação de país provam que o túnel *chegou* a subir — não que ele continua de pé no segundo seguinte. Relay gratuito que cai nos primeiros segundos, rota que ainda oscila e adaptador que perde o IPv4 acontecem depois desse ponto, e o `connected` do broker não volta atrás quando acontecem. Lançar o Discord em cima disso é o pior cenário possível: ele registra o IP real e não há segunda chance sem matar e relançar.
+
+Agora há um respiro fixo e então duas checagens seguidas (adaptador com IPv4 + país `!= BR`, 2 s entre elas). Uma falha isolada **não** condena a sessão — oscilar logo após a troca de rotas é normal, então o contador zera e a janela de 30 s continua correndo. Não estabilizar dentro dela, sim, é falha: melhor o popup com as duas saídas do que um Discord aberto por um túnel que não existe mais.
+
+**4. O teardown virou um botão (passo 12b).** `EsperarCapturaDeIp` acerta o caso comum, mas é heurística de rede: ela não vê uma tela de login, um update do Discord em andamento nem um 2FA esperando o celular do usuário. O popup de OK entrega essa decisão a quem está olhando a tela.
+
+O clique não pode ser a **única** saída — "o túnel nunca fica aberto" não pode virar refém de um popup ignorado (usuário saiu, tela bloqueada). Por isso o dialogo vive em uma thread própria e, estourado o teto de 10 min, é dispensado de fora com `WM_COMMAND`/`IDOK` (mais `WM_CLOSE` como reserva, insistindo por 5 s). E mesmo que a janela insista em ficar na tela, o teardown acontece: a thread é de background e não segura a saída do processo.
+
+Armadilha registrada: `FindWindow` precisa de um título **próprio** para achar esse dialogo. O `Console.Title` do launcher é `"Discord VPN Launcher"`, o mesmo caption dos outros popups — buscar por ele acertaria a janela errada e deixaria o dialogo (e o túnel) de pé. Daí o `"Discord VPN Launcher - VPN ligada"`, com a busca restrita à classe `#32770` dos dialogos.

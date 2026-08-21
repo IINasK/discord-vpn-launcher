@@ -162,4 +162,96 @@ internal static class NativeMethods
 
         return result == IDYES ? FailureChoice.ContinuarSemVpn : FailureChoice.Fechar;
     }
+
+    private const uint MB_OK = 0x00000000;
+    private const uint MB_ICONINFORMATION = 0x00000040;
+    private const uint WM_COMMAND = 0x0111;
+    private const uint WM_CLOSE = 0x0010;
+    private const int IDOK = 1;
+
+    /// <summary>Classe de janela de todo dialogo padrao do Windows, MessageBox incluso.</summary>
+    private const string ClasseDialogo = "#32770";
+
+    /// <summary>
+    /// Titulo proprio, diferente do usado nos outros popups e do Console.Title: e por
+    /// ele que o fechamento automatico encontra a janela, e acertar a janela errada
+    /// significaria deixar o dialogo de pe (e o tunel junto).
+    /// </summary>
+    private const string TituloDesligar = "Discord VPN Launcher - VPN ligada";
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr FindWindowW(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>
+    /// Segura o teardown ate o usuario mandar desligar a VPN.
+    ///
+    /// O botao e manual porque so o usuario sabe se o Discord ja terminou de carregar
+    /// na tela dele. Mas o clique NAO pode ser a unica saida: o invariante e que o
+    /// tunel nunca fica aberto, e um popup ignorado (usuario saiu, tela bloqueada)
+    /// deixaria o trafego inteiro passando pelo relay indefinidamente. Por isso o
+    /// dialogo vive em uma thread propria e, estourado o teto, e dispensado daqui de
+    /// fora com um WM_COMMAND/IDOK - o mesmo que o clique produziria.
+    /// </summary>
+    /// <returns>true se o usuario clicou; false se o teto de tempo dispensou o popup.</returns>
+    public static bool ShowTeardownPrompt(TimeSpan teto)
+    {
+        var text =
+            "O Discord já registrou o IP da VPN.\n\n" +
+            "A VPN continua ligada até você clicar em OK — enquanto isso, todo o " +
+            "tráfego passa pelo servidor no exterior e o ping em call fica alto.\n\n" +
+            "Clique em OK assim que o Discord terminar de carregar.\n\n" +
+            $"Sem resposta, ela será desligada sozinha em {teto.TotalMinutes:0} minuto(s).";
+
+        var clicou = false;
+
+        var thread = new Thread(() =>
+        {
+            MessageBoxW(
+                IntPtr.Zero,
+                text,
+                TituloDesligar,
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
+
+            clicou = true;
+        })
+        {
+            IsBackground = true,
+        };
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        if (thread.Join(teto))
+            return clicou;
+
+        // Estourou: dispensa o dialogo e segue para o teardown. As mensagens vao por
+        // PostMessage porque quem processa a fila e a thread dona da janela, e vao as
+        // duas porque uma pode nao pegar - o WM_COMMAND/IDOK e o equivalente exato ao
+        // clique e o WM_CLOSE e a rede de seguranca. Insiste por alguns segundos: a
+        // janela pode nao estar respondendo no instante exato do estouro.
+        var prazo = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+
+        while (DateTime.UtcNow < prazo)
+        {
+            var janela = FindWindowW(ClasseDialogo, TituloDesligar);
+
+            if (janela != IntPtr.Zero)
+            {
+                PostMessageW(janela, WM_COMMAND, (IntPtr)IDOK, IntPtr.Zero);
+                PostMessageW(janela, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            }
+
+            if (thread.Join(TimeSpan.FromMilliseconds(500)))
+                break;
+        }
+
+        // Se o popup insistir em ficar na tela, o teardown acontece do mesmo jeito:
+        // a thread e de background e nao segura a saida do processo. A VPN cair nunca
+        // pode depender de a janela ter fechado.
+        return false;
+    }
 }

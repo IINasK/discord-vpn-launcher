@@ -24,7 +24,9 @@ Se você não confia em executar isso, [compile você mesmo](#compilar): o códi
 
 ### Como usar
 
-Clique no atalho **Discord** criado pelo instalador (não no Discord original). Espere a contagem regressiva do console terminar — enquanto ela roda, a VPN está de pé e o ping em call fica alto. Quando aparecer `VPN desligada, ping normal`, pode entrar em call normalmente.
+Clique no atalho **Discord** criado pelo instalador (não no Discord original). Quando o Discord terminar de carregar, aparece um aviso **"clique em OK para desligar a VPN"** — clique nele. Enquanto a VPN está de pé, todo o seu tráfego passa pelo servidor no exterior e o ping em call fica alto; depois do `VPN desligada, ping normal` no console, pode entrar em call normalmente.
+
+Se você não clicar, a VPN se desliga sozinha em 10 minutos.
 
 ---
 
@@ -172,13 +174,21 @@ Se alguém relatar que "não abre", **é o primeiro comando a pedir**.
 
 **Enquanto o túnel está ativo, todo o seu tráfego passa pelo relay no exterior — o ping em call fica impraticável.** Por isso a janela é a menor possível: o launcher não espera um tempo fixo, ele observa o Discord.
 
-A VPN cai assim que uma conexão do Discord pelo túnel **sobrevive 6 s** (é a sessão do gateway; as conexões de boot morrem em menos de 1 s), mais 5 s de margem. Na prática são ~15 s de VPN depois que o Discord abre, contra os 30 s fixos da versão anterior. O console mostra a contagem regressiva — **espere ela terminar antes de entrar em call**; a última linha é `VPN desligada, ping normal`.
+O launcher espera uma conexão do Discord pelo túnel **sobreviver 6 s** (é a sessão do gateway; as conexões de boot morrem em menos de 1 s), segura mais 5 s de margem e então **pergunta a você**: aparece um aviso com um botão **OK** para desligar a VPN.
 
-Se algum dia o IP registrado sair como brasileiro, aumente a margem:
+O botão existe porque a detecção automática não enxerga a sua tela — ela não sabe se você ainda está na tela de login, se o Discord está baixando uma atualização ou se o 2FA está esperando o celular. Clique em OK quando o Discord estiver realmente carregado. **Sem resposta em 10 minutos, a VPN se desliga sozinha** — o túnel nunca fica aberto esperando um clique que talvez não venha.
+
+Antes de tudo isso, entre conectar a VPN e abrir o Discord, o launcher confere que o túnel está firme: 5 s de assentamento e duas checagens seguidas de que o tráfego continua saindo fora do Brasil. Relay gratuito que cai nos primeiros segundos é comum, e abrir o Discord em cima de um túnel morto registraria o IP real.
+
+Três ajustes por variável de ambiente, se precisar:
 
 ```powershell
-$env:DISCORD_VPN_LAUNCHER_ESPERA = "20"   # segundos, máximo 300
+$env:DISCORD_VPN_LAUNCHER_ESPERA = "20"          # margem após o Discord falar pelo túnel (padrão 5 s)
+$env:DISCORD_VPN_LAUNCHER_ESTABILIZACAO = "10"   # assentamento do túnel antes de abrir o Discord (padrão 5 s)
+$env:DISCORD_VPN_LAUNCHER_TETO_MANUAL = "0"      # 0 = desliga a VPN direto, sem o aviso (padrão 600 s)
 ```
+
+Aumente o `ESPERA` se algum dia o IP registrado sair como brasileiro.
 
 ---
 

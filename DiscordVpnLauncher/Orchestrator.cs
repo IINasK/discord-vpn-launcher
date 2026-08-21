@@ -36,6 +36,39 @@ internal static class Orchestrator
 
     /// <summary>Ajuste da folga sem recompilar, em segundos.</summary>
     private const string EnvFolga = "DISCORD_VPN_LAUNCHER_ESPERA";
+
+    /// <summary>
+    /// Respiro fixo entre a confirmacao do pais e a checagem de estabilidade, para o
+    /// tunel recem-criado terminar de assentar antes de ser cobrado.
+    /// </summary>
+    private static readonly TimeSpan EsperaEstabilizacaoPadrao = TimeSpan.FromSeconds(5);
+
+    private const string EnvEstabilizacao = "DISCORD_VPN_LAUNCHER_ESTABILIZACAO";
+
+    /// <summary>
+    /// Checagens seguidas e bem-sucedidas exigidas antes de o Discord subir. Duas ja
+    /// separam "conectou e ficou" de "conectou e caiu"; mais que isso e tempo de ping
+    /// ruim cobrado do usuario sem informacao nova.
+    /// </summary>
+    private const int ChecagensEstabilidade = 2;
+
+    private static readonly TimeSpan IntervaloEstabilidade = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Prazo total da estabilizacao. Uma checagem que falha nao condena a sessao - ela
+    /// zera o contador e tenta de novo dentro desta janela, porque oscilar uma vez logo
+    /// apos a troca de rotas e normal; nao estabilizar dentro dela e que nao e.
+    /// </summary>
+    private static readonly TimeSpan JanelaEstabilizacao = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Teto da espera pelo clique de desligar. Generoso porque o normal e o usuario
+    /// clicar em segundos; ele existe para a VPN nao ficar de pe quando o popup e
+    /// ignorado, nao para apressar ninguem.
+    /// </summary>
+    private static readonly TimeSpan TetoDesligamentoManual = TimeSpan.FromMinutes(10);
+
+    private const string EnvTetoManual = "DISCORD_VPN_LAUNCHER_TETO_MANUAL";
     private static readonly TimeSpan TimeoutIpinfo = TimeSpan.FromSeconds(5);
 
     /// <summary>Prazo total para confirmar que o IP publico ficou fora do Brasil.</summary>
@@ -110,11 +143,25 @@ internal static class Orchestrator
 
             Log.Step($"IP atual em {paisOriginal}.");
 
-            // 3. Discord fora do ar antes de qualquer coisa
+            // 3. Discord fora do ar antes de qualquer coisa.
+            //
+            // Com zero processos encerrados nao ha o que esperar: o pipe discord-ipc-0
+            // pertence ao processo do Discord e morre junto com ele, entao sem Discord
+            // aberto nao existe pipe orfao a sumir. A espera so gastaria segundos para
+            // confirmar o que ja se sabe - e este e o caso comum de quem desativou o
+            // inicio automatico, como o launcher pede.
             var mortos = DiscordController.MatarTudo();
-            Log.Step($"Discord encerrado ({mortos} processo(s)).");
-            if (!DiscordController.EsperarPipeSumir(TimeoutPipeSumir))
-                Log.Warn("O pipe discord-ipc-0 continua de pe; a deteccao de prontidao pode ser falso-positiva.");
+
+            if (mortos == 0)
+            {
+                Log.Step("Nenhum Discord aberto; seguindo direto.");
+            }
+            else
+            {
+                Log.Step($"Discord encerrado ({mortos} processo(s)).");
+                if (!DiscordController.EsperarPipeSumir(TimeoutPipeSumir))
+                    Log.Warn("O pipe discord-ipc-0 continua de pe; a deteccao de prontidao pode ser falso-positiva.");
+            }
 
             // 4-5. Lista VPNGate, filtro != BR e ranqueamento
             var csv = await VpnGateClient.DownloadCsvAsync(CancellationToken.None).ConfigureAwait(false);
@@ -167,6 +214,18 @@ internal static class Orchestrator
 
             Log.Step($"IP confirmado fora do Brasil: {paisReal}.");
 
+            // 10b. Estabilizacao. Uma confirmacao unica prova que o tunel chegou a
+            // funcionar, nao que ele esta firme: relay do VPNGate que cai nos primeiros
+            // segundos, rota que ainda oscila e adaptador que perde o IP acontecem
+            // depois do "Initialization Sequence Completed". Lancar o Discord em cima
+            // disso e o pior cenario - ele registra o IP real e nao ha segunda chance
+            // sem matar e relancar.
+            var (estavel, motivoInstabilidade) =
+                await EstabilizarTunelAsync(paisReal).ConfigureAwait(false);
+
+            if (!estavel)
+                return FinalizarComFalha(paths, broker, motivoInstabilidade);
+
             // 11. Discord por baixo do tunel, sem elevacao
             if (!DiscordController.Lancar())
                 return FinalizarComFalha(paths, broker, "não foi possível iniciar o Discord");
@@ -182,7 +241,12 @@ internal static class Orchestrator
 
             EsperarCapturaDeIp();
 
-            // 13-14. Teardown
+            // 13. O desligamento e do usuario: so ele ve se o Discord ja carregou por
+            // inteiro na tela. O teto de tempo existe para o invariante do tunel nunca
+            // ficar refem de um clique que pode nunca vir.
+            AguardarComandoDeDesligar();
+
+            // 14. Teardown
             PararVpn(paths, broker);
             Log.Step("Pronto: VPN desligada, ping normal. O Discord ficou com o IP capturado - " +
                      "pode entrar em call.");
@@ -351,6 +415,85 @@ internal static class Orchestrator
     }
 
     /// <summary>
+    /// Verifica que o tunel esta firme - nao apenas que chegou a subir - antes de o
+    /// Discord ser lancado.
+    ///
+    /// Sao tres coisas conferidas, e nenhuma substitui a outra:
+    ///
+    /// 1. Um respiro fixo, para o adaptador e as rotas terminarem de assentar.
+    /// 2. O adaptador do tunel continuar com IPv4. Se ele perdeu o endereco, o trafego
+    ///    ja voltou para a placa real, e o Discord registraria o IP brasileiro.
+    /// 3. Duas consultas de pais seguidas respondendo fora do BR. Relay do VPNGate que
+    ///    cai nos primeiros segundos e comum, e o "connected" do OpenVPN nao volta
+    ///    atras quando isso acontece.
+    ///
+    /// Uma falha isolada nao condena a sessao: o contador zera e a janela continua
+    /// correndo. Estourar a janela, sim, e falha - vale mais o popup com as duas
+    /// saidas do que um Discord aberto por um tunel que nao existe mais.
+    /// </summary>
+    private static async Task<(bool Estavel, string Motivo)> EstabilizarTunelAsync(string paisEsperado)
+    {
+        var espera = LerTempoEnv(EnvEstabilizacao, EsperaEstabilizacaoPadrao);
+
+        if (espera > TimeSpan.Zero)
+        {
+            Log.Info($"Deixando o tunel assentar por {espera.TotalSeconds:0}s antes de abrir o Discord.");
+            await Task.Delay(espera).ConfigureAwait(false);
+        }
+
+        var limite = DateTime.UtcNow + JanelaEstabilizacao;
+        var seguidas = 0;
+        var ultimoMotivo = "o túnel não se firmou a tempo";
+
+        while (true)
+        {
+            if (WintunAdapter.EnderecoIpv4() is null)
+            {
+                seguidas = 0;
+                ultimoMotivo = "o adaptador da VPN ficou sem endereço IP";
+                Log.Warn("O adaptador do tunel esta sem IPv4; o trafego pode ter voltado para a rede real.");
+            }
+            else
+            {
+                var (pais, erro) = await TentarPaisAsync().ConfigureAwait(false);
+
+                if (pais is null)
+                {
+                    seguidas = 0;
+                    ultimoMotivo = $"a verificação de IP parou de responder pelo túnel ({erro})";
+                    Log.Warn($"Estabilidade: sem resposta ({erro}).");
+                }
+                else if (pais.Equals("BR", StringComparison.OrdinalIgnoreCase))
+                {
+                    seguidas = 0;
+                    ultimoMotivo = "o tráfego voltou a sair pelo IP brasileiro logo após a conexão";
+                    Log.Warn("Estabilidade: a saida voltou a ser BR.");
+                }
+                else
+                {
+                    seguidas++;
+
+                    if (!pais.Equals(paisEsperado, StringComparison.OrdinalIgnoreCase))
+                        Log.Warn($"A saida mudou de {paisEsperado} para {pais}; segue valendo (nao e BR).");
+
+                    Log.Info($"Estabilidade {seguidas}/{ChecagensEstabilidade}: saindo por {pais}.");
+
+                    if (seguidas >= ChecagensEstabilidade)
+                    {
+                        Log.Step("Conexao com a VPN estabilizada; abrindo o Discord.");
+                        return (true, string.Empty);
+                    }
+                }
+            }
+
+            if (DateTime.UtcNow >= limite)
+                return (false, ultimoMotivo);
+
+            await Task.Delay(IntervaloEstabilidade).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Uma volta pelos servicos, devolvendo o primeiro que responder. Cria um
     /// HttpClient novo a cada chamada de proposito: reaproveitar conexao depois de
     /// subir o tunel devolveria a resposta pela rota antiga.
@@ -506,17 +649,53 @@ internal static class Orchestrator
     /// ambiente existe para ajustar sem recompilar, ja que o tempo certo depende da
     /// maquina e da conexao.
     /// </summary>
-    private static TimeSpan FolgaAposConexao()
-    {
-        var bruto = Environment.GetEnvironmentVariable(EnvFolga);
+    private static TimeSpan FolgaAposConexao() => LerTempoEnv(EnvFolga, FolgaPadrao);
 
-        if (int.TryParse(bruto, out var segundos) && segundos is >= 0 and <= 300)
+    /// <summary>
+    /// Le um tempo em segundos de variavel de ambiente, caindo no padrao quando o valor
+    /// e ausente ou nao faz sentido. O teto de 3600 s nao e arbitrario: acima disso o
+    /// valor quase certamente e engano (milissegundos digitados como segundos), e o
+    /// preco de aceitar seria uma VPN de pe por horas.
+    /// </summary>
+    private static TimeSpan LerTempoEnv(string nome, TimeSpan padrao)
+    {
+        var bruto = Environment.GetEnvironmentVariable(nome);
+
+        if (int.TryParse(bruto, out var segundos) && segundos is >= 0 and <= 3600)
             return TimeSpan.FromSeconds(segundos);
 
         if (!string.IsNullOrWhiteSpace(bruto))
-            Log.Warn($"{EnvFolga}='{bruto}' ignorado (esperado: 0 a 300 segundos).");
+            Log.Warn($"{nome}='{bruto}' ignorado (esperado: 0 a 3600 segundos).");
 
-        return FolgaPadrao;
+        return padrao;
+    }
+
+    /// <summary>
+    /// Popup que segura o tunel ate o usuario mandar desligar.
+    ///
+    /// Quem esta na frente da tela e a unica parte do sistema que sabe se o Discord
+    /// terminou de carregar - a heuristica de EsperarCapturaDeIp acerta o caso comum,
+    /// mas nao ve uma tela de login, um update em andamento ou um 2FA. O clique fecha
+    /// essa lacuna. O teto continua existindo porque a VPN nao pode ficar de pe
+    /// esperando um clique que talvez nunca venha.
+    /// </summary>
+    private static void AguardarComandoDeDesligar()
+    {
+        var teto = LerTempoEnv(EnvTetoManual, TetoDesligamentoManual);
+
+        if (teto <= TimeSpan.Zero)
+        {
+            Log.Info("Desligamento manual desativado; derrubando a VPN direto.");
+            return;
+        }
+
+        Log.Step($"VPN ainda ligada. Clique em OK no aviso para desliga-la " +
+                 $"(automatico em {teto.TotalMinutes:0.#} min).");
+
+        if (NativeMethods.ShowTeardownPrompt(teto))
+            Log.Step("Desligamento pedido pelo usuario.");
+        else
+            Log.Warn($"Sem resposta em {teto.TotalMinutes:0.#} min; desligando a VPN por conta propria.");
     }
 
     private static void PararVpn(Paths paths, Process? broker)

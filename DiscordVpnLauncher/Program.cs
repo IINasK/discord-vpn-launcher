@@ -91,8 +91,18 @@ internal static class Program
 
               DISCORD_VPN_LAUNCHER_ESPERA
                   Segundos de VPN mantidos após o Discord iniciar a comunicação pelo
-                  túnel (padrão 5, máximo 300). Aumente caso o IP registrado ainda
-                  esteja saindo como brasileiro.
+                  túnel (padrão 5). Aumente caso o IP registrado ainda esteja saindo
+                  como brasileiro.
+
+              DISCORD_VPN_LAUNCHER_ESTABILIZACAO
+                  Segundos de espera entre conectar a VPN e abrir o Discord, para o
+                  túnel assentar (padrão 5). A checagem de estabilidade acontece
+                  depois dessa espera e não depende dela.
+
+              DISCORD_VPN_LAUNCHER_TETO_MANUAL
+                  Segundos que o aviso "clique em OK para desligar a VPN" aguarda
+                  antes de desligar sozinho (padrão 600). Use 0 para desligar a VPN
+                  imediatamente, sem aviso.
 
             Pré-requisito: desative a opção "Abrir o Discord" (inicialização automática
             do próprio Discord), caso contrário ele será iniciado com o IP real.

@@ -149,17 +149,129 @@ internal static class VpnGateClient
         => colunas.TryGetValue(nome, out var i) && i < campos.Length ? campos[i].Trim() : string.Empty;
 
     /// <summary>
-    /// Descarta relays brasileiros e ranqueia o resto. Score alto no VPNGate reflete
-    /// banda + uptime acumulados; o ping entra so como desempate.
+    /// Ordem de preferencia dos relays. O que pesa aqui nao e a latencia do tunel (ele
+    /// vive menos de um minuto), e sim a regiao de voz que o Discord escolhe a partir do
+    /// IP registrado: essa sobrevive ao teardown e e o ping que o usuario sente na call.
+    ///
+    /// Os EUA vem na frente por decisao de produto, nao por distancia: a US East fica em
+    /// torno de 120 ms do Brasil - pior que um vizinho sul-americano, melhor que qualquer
+    /// outra coisa - e e a unica regiao com oferta grande e estavel de relays no VPNGate.
+    /// A vizinhanca sul-americana e magra e costuma estar fora do ar, entao prioriza-la
+    /// gastava as tentativas antes de chegar em algo que conecta. Depois do US, a lista
+    /// segue por distancia ate o Brasil; pais fora dela entra atras de todos os conhecidos.
+    /// </summary>
+    private static readonly string[] PaisesPorProximidade =
+    {
+        // Preferencia explicita
+        "US",
+        // America do Sul
+        "UY", "AR", "PY", "BO", "CL", "PE", "CO", "VE", "EC", "GY", "SR", "GF",
+        // America Central e Caribe
+        "PA", "CR", "NI", "HN", "SV", "GT", "BZ", "CU", "DO", "HT", "JM", "TT", "PR", "BS",
+        // Africa ocidental e austral - o Atlantico Sul e curto
+        "CV", "SN", "GM", "GN", "CI", "GH", "NG", "AO", "ZA", "NA", "MA", "DZ", "TN",
+        // America do Norte (o US ja foi, la em cima)
+        "MX", "CA",
+        // Europa
+        "PT", "ES", "IT", "FR", "GB", "UK", "IE", "BE", "NL", "LU", "CH", "DE", "AT",
+        "DK", "NO", "SE", "FI", "IS", "PL", "CZ", "SK", "HU", "SI", "HR", "BA", "RS",
+        "AL", "GR", "BG", "RO", "MD", "UA", "BY", "LT", "LV", "EE", "TR", "RU",
+        // Oriente Medio, Norte da Africa oriental e Asia Central
+        "IL", "CY", "JO", "LB", "EG", "SA", "AE", "QA", "KW", "IQ", "IR", "KE",
+        "GE", "AM", "AZ", "KZ", "UZ",
+        // Oceania - ainda mais perto do Brasil que o Extremo Oriente
+        "AU", "NZ",
+        // Asia meridional
+        "IN", "PK", "BD", "LK", "NP",
+        // Sudeste asiatico
+        "SG", "MY", "ID", "TH", "VN", "PH", "KH", "MM",
+        // Extremo Oriente
+        "CN", "HK", "MO", "TW", "MN", "KR", "JP",
+    };
+
+    private static readonly Dictionary<string, int> RankPorPais =
+        PaisesPorProximidade
+            .Select((pais, indice) => (pais, indice))
+            .ToDictionary(p => p.pais, p => p.indice, StringComparer.OrdinalIgnoreCase);
+
+    private static int Proximidade(VpnGateRelay relay)
+        => RankPorPais.TryGetValue(relay.CountryShort, out var rank) ? rank : int.MaxValue;
+
+    /// <summary>
+    /// Quantos candidatos, no maximo, um mesmo pais pode ocupar na primeira passada.
+    /// Existe para o retry continuar significando alguma coisa: os EUA sozinhos passam
+    /// de dez relays na lista do VPNGate, e sem teto os cinco candidatos sairiam todos
+    /// de la - uma rota ruim ate o pais derrubaria a sessao inteira sem que nenhuma
+    /// alternativa tivesse sido tentada. Se nao houver paises suficientes, a segunda
+    /// passada preenche o que sobrou ignorando o teto.
+    /// </summary>
+    private const int MaximoPorPais = 3;
+
+    /// <summary>
+    /// Descarta relays brasileiros e ranqueia o resto pela ordem de preferencia (US,
+    /// depois por distancia ate o Brasil); Score (banda + uptime acumulados) e depois
+    /// Ping desempatam dentro do pais, e <see cref="MaximoPorPais"/> impede que um unico
+    /// pais tome todos os slots. O ultimo slot fica reservado para o melhor relay da
+    /// lista inteira: se a preferencia estiver toda morta, a sessao ainda sobe (com ping
+    /// ruim) em vez de falhar.
     /// </summary>
     public static IReadOnlyList<VpnGateRelay> SelecionarCandidatos(
         IEnumerable<VpnGateRelay> relays, int quantidade)
-        => relays
+    {
+        var elegiveis = relays
             .Where(r => !r.CountryShort.Equals(CountryBrasil, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (quantidade <= 0 || elegiveis.Count == 0)
+            return Array.Empty<VpnGateRelay>();
+
+        var reserva = elegiveis
             .OrderByDescending(r => r.Score)
             .ThenBy(r => r.Ping)
-            .Take(quantidade)
+            .First();
+
+        var ranqueados = elegiveis
+            .OrderBy(Proximidade)
+            .ThenByDescending(r => r.Score)
+            .ThenBy(r => r.Ping)
             .ToList();
+
+        var escolhidos = new List<VpnGateRelay>(quantidade);
+        var porPais = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // Duas passadas sobre a mesma ordem: a primeira respeita o teto por pais, a
+        // segunda completa as vagas que o teto deixou abertas.
+        foreach (var respeitarTeto in new[] { true, false })
+        {
+            foreach (var relay in ranqueados)
+            {
+                if (escolhidos.Count == quantidade)
+                    break;
+
+                if (escolhidos.Contains(relay))
+                    continue;
+
+                porPais.TryGetValue(relay.CountryShort, out var usados);
+                if (respeitarTeto && usados >= MaximoPorPais)
+                    continue;
+
+                escolhidos.Add(relay);
+                porPais[relay.CountryShort] = usados + 1;
+            }
+        }
+
+        // Com um slot so nao ha "ultimo slot" para reservar: ceder o unico candidato ao
+        // melhor Score global jogaria fora a preferencia de pais inteira.
+        if (quantidade > 1 && !escolhidos.Contains(reserva))
+        {
+            if (escolhidos.Count == quantidade)
+                escolhidos[^1] = reserva;
+            else
+                escolhidos.Add(reserva);
+        }
+
+        return escolhidos;
+    }
 
     /// <summary>
     /// Decodifica cada candidato e grava work\candN.ovpn.
