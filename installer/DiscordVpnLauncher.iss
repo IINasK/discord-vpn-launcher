@@ -23,7 +23,7 @@
 ; do marcador gravado por SetPreviousData, la no [Code] da desinstalacao.
 #define AppIdGuid "{8F3C2A94-6D51-4E2B-9C77-1B5A0E3D7F42}"
 #define AppNome "Discord VPN Launcher"
-#define AppVersao "1.3.0"
+#define AppVersao "1.4.0"
 #define AppExe "Discord.exe"
 #define AppAutor "Douglas"
 

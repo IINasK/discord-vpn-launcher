@@ -95,9 +95,9 @@ internal static class Program
                   como brasileiro.
 
               DISCORD_VPN_LAUNCHER_ESTABILIZACAO
-                  Segundos de espera entre conectar a VPN e abrir o Discord, para o
-                  túnel assentar (padrão 5). A checagem de estabilidade acontece
-                  depois dessa espera e não depende dela.
+                  Segundos de espera entre conectar a VPN e checar a estabilidade do
+                  túnel (padrão 0). A checagem em si acontece de qualquer forma; esta
+                  variável só acrescenta um respiro antes dela.
 
               DISCORD_VPN_LAUNCHER_TETO_MANUAL
                   Segundos que o aviso "clique em OK para desligar a VPN" aguarda

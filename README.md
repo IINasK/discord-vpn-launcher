@@ -178,13 +178,13 @@ O launcher espera uma conexão do Discord pelo túnel **sobreviver 6 s** (é a s
 
 O botão existe porque a detecção automática não enxerga a sua tela — ela não sabe se você ainda está na tela de login, se o Discord está baixando uma atualização ou se o 2FA está esperando o celular. Clique em OK quando o Discord estiver realmente carregado. **Sem resposta em 10 minutos, a VPN se desliga sozinha** — o túnel nunca fica aberto esperando um clique que talvez não venha.
 
-Antes de tudo isso, entre conectar a VPN e abrir o Discord, o launcher confere que o túnel está firme: 5 s de assentamento e duas checagens seguidas de que o tráfego continua saindo fora do Brasil. Relay gratuito que cai nos primeiros segundos é comum, e abrir o Discord em cima de um túnel morto registraria o IP real.
+Antes de tudo isso, entre conectar a VPN e abrir o Discord, o launcher confere que o túnel está firme: duas checagens seguidas, com 2 s entre elas, de que o tráfego continua saindo fora do Brasil. Relay gratuito que cai nos primeiros segundos é comum, e abrir o Discord em cima de um túnel morto registraria o IP real.
 
 Três ajustes por variável de ambiente, se precisar:
 
 ```powershell
 $env:DISCORD_VPN_LAUNCHER_ESPERA = "20"          # margem após o Discord falar pelo túnel (padrão 5 s)
-$env:DISCORD_VPN_LAUNCHER_ESTABILIZACAO = "10"   # assentamento do túnel antes de abrir o Discord (padrão 5 s)
+$env:DISCORD_VPN_LAUNCHER_ESTABILIZACAO = "10"   # respiro extra antes de checar a estabilidade (padrão 0 s)
 $env:DISCORD_VPN_LAUNCHER_TETO_MANUAL = "0"      # 0 = desliga a VPN direto, sem o aviso (padrão 600 s)
 ```
 

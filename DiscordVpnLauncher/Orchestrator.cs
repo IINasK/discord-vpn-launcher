@@ -38,10 +38,17 @@ internal static class Orchestrator
     private const string EnvFolga = "DISCORD_VPN_LAUNCHER_ESPERA";
 
     /// <summary>
-    /// Respiro fixo entre a confirmacao do pais e a checagem de estabilidade, para o
-    /// tunel recem-criado terminar de assentar antes de ser cobrado.
+    /// Respiro fixo antes das checagens de estabilidade. Padrao ZERO, de proposito.
+    ///
+    /// Nasceu como 5 s de "deixar o tunel assentar", mas o assentamento ja aconteceu
+    /// antes: ConfirmarPaisAsync so retorna quando uma consulta responde de fato. O
+    /// que sobrava era espalhar a observacao no tempo para um relay moribundo se
+    /// revelar - e disso ja cuidam as duas checagens separadas por
+    /// <see cref="IntervaloEstabilidade"/>. Espera fixa que nao acrescenta sinal e so
+    /// ping ruim cobrado do usuario. Fica a variavel de ambiente para quem quiser um
+    /// respiro maior numa maquina ou conexao especifica.
     /// </summary>
-    private static readonly TimeSpan EsperaEstabilizacaoPadrao = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan EsperaEstabilizacaoPadrao = TimeSpan.Zero;
 
     private const string EnvEstabilizacao = "DISCORD_VPN_LAUNCHER_ESTABILIZACAO";
 
@@ -74,6 +81,13 @@ internal static class Orchestrator
     /// <summary>Prazo total para confirmar que o IP publico ficou fora do Brasil.</summary>
     private static readonly TimeSpan JanelaConfirmacaoIp = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan IntervaloEntreTentativasIp = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// A partir de quando a demora na confirmacao vira assunto do usuario. O caso
+    /// normal resolve em ~5 s (a 1a tentativa falha, a 2a responde), e ate esse ponto
+    /// a tela fica quieta - o detalhe de cada tentativa vai para o launcher.log.
+    /// </summary>
+    private static readonly TimeSpan AvisoDemoraConfirmacao = TimeSpan.FromSeconds(8);
 
     /// <summary>Respiro entre o fim do OpenVPN e a 1a consulta, para as rotas assentarem.</summary>
     private static readonly TimeSpan EsperaAssentarRotas = TimeSpan.FromSeconds(2);
@@ -382,8 +396,10 @@ internal static class Orchestrator
         // evita queimar uma volta inteira em erro de socket.
         await Task.Delay(EsperaAssentarRotas).ConfigureAwait(false);
 
-        var limite = DateTime.UtcNow + janela;
+        var inicio = DateTime.UtcNow;
+        var limite = inicio + janela;
         var tentativa = 0;
+        var avisouDemora = false;
         string? ultimoPais = null;
         var ultimoMotivo = "nenhuma tentativa concluida";
 
@@ -395,16 +411,28 @@ internal static class Orchestrator
             if (pais is not null && !pais.Equals("BR", StringComparison.OrdinalIgnoreCase))
                 return (pais, $"confirmado na tentativa {tentativa}");
 
+            // As tentativas que falham aqui vao para o arquivo, nao para a tela: logo
+            // apos o tunel subir elas sao o comportamento normal (rotas e DNS acabaram
+            // de mudar) e se resolvem na volta seguinte. Na 1.3 esse texto aparecia no
+            // console e usuarios reportaram como erro - ver Log.Diag.
             if (pais is not null)
             {
                 ultimoPais = pais;
                 ultimoMotivo = "as consultas continuam saindo pelo IP brasileiro";
-                Log.Warn($"Tentativa {tentativa}: ainda BR; as rotas do tunel podem nao ter assentado.");
+                Log.Diag($"Tentativa {tentativa}: ainda BR; as rotas do tunel podem nao ter assentado.");
             }
             else
             {
                 ultimoMotivo = erro;
-                Log.Warn($"Tentativa {tentativa}: {erro}");
+                Log.Diag($"Tentativa {tentativa}: {erro}");
+            }
+
+            // Passou do normal: aqui vale ocupar a tela, uma vez so, sem jargao de
+            // socket. O caso comum confirma em ~5 s e nunca chega nesta linha.
+            if (!avisouDemora && DateTime.UtcNow - inicio > AvisoDemoraConfirmacao)
+            {
+                avisouDemora = true;
+                Log.Info("Aguardando as rotas da VPN assentarem...");
             }
 
             if (DateTime.UtcNow >= limite)
@@ -441,8 +469,10 @@ internal static class Orchestrator
             await Task.Delay(espera).ConfigureAwait(false);
         }
 
-        var limite = DateTime.UtcNow + JanelaEstabilizacao;
+        var inicio = DateTime.UtcNow;
+        var limite = inicio + JanelaEstabilizacao;
         var seguidas = 0;
+        var avisouOscilacao = false;
         var ultimoMotivo = "o túnel não se firmou a tempo";
 
         while (true)
@@ -451,7 +481,7 @@ internal static class Orchestrator
             {
                 seguidas = 0;
                 ultimoMotivo = "o adaptador da VPN ficou sem endereço IP";
-                Log.Warn("O adaptador do tunel esta sem IPv4; o trafego pode ter voltado para a rede real.");
+                Log.Diag("O adaptador do tunel esta sem IPv4; o trafego pode ter voltado para a rede real.");
             }
             else
             {
@@ -461,20 +491,20 @@ internal static class Orchestrator
                 {
                     seguidas = 0;
                     ultimoMotivo = $"a verificação de IP parou de responder pelo túnel ({erro})";
-                    Log.Warn($"Estabilidade: sem resposta ({erro}).");
+                    Log.Diag($"Estabilidade: sem resposta ({erro}).");
                 }
                 else if (pais.Equals("BR", StringComparison.OrdinalIgnoreCase))
                 {
                     seguidas = 0;
                     ultimoMotivo = "o tráfego voltou a sair pelo IP brasileiro logo após a conexão";
-                    Log.Warn("Estabilidade: a saida voltou a ser BR.");
+                    Log.Diag("Estabilidade: a saida voltou a ser BR.");
                 }
                 else
                 {
                     seguidas++;
 
                     if (!pais.Equals(paisEsperado, StringComparison.OrdinalIgnoreCase))
-                        Log.Warn($"A saida mudou de {paisEsperado} para {pais}; segue valendo (nao e BR).");
+                        Log.Diag($"A saida mudou de {paisEsperado} para {pais}; segue valendo (nao e BR).");
 
                     Log.Info($"Estabilidade {seguidas}/{ChecagensEstabilidade}: saindo por {pais}.");
 
@@ -484,6 +514,15 @@ internal static class Orchestrator
                         return (true, string.Empty);
                     }
                 }
+            }
+
+            // Mesma regra da confirmacao de pais: o detalhe de cada checagem vai para
+            // o arquivo, e a tela so e ocupada quando a demora ja passou do normal -
+            // aqui isso significa que o contador zerou pelo menos uma vez.
+            if (!avisouOscilacao && DateTime.UtcNow - inicio > AvisoDemoraConfirmacao)
+            {
+                avisouOscilacao = true;
+                Log.Info("A conexao ainda esta oscilando; aguardando ela firmar...");
             }
 
             if (DateTime.UtcNow >= limite)
