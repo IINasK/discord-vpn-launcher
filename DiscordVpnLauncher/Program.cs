@@ -56,6 +56,7 @@ internal static class Program
 
         Console.WriteLine("Discord VPN Launcher - diagnóstico");
         Console.WriteLine();
+        Console.WriteLine($"  Versão        : {Versao()}");
         Console.WriteLine($"  Launcher      : {Environment.ProcessPath}");
         Console.WriteLine($"  Elevado       : {(ElevationHelper.IsElevated() ? "SIM (não deveria)" : "não (correto)")}");
         Console.WriteLine($"  Discord em    : {DiscordController.DescreverAlvo()}");
@@ -65,6 +66,17 @@ internal static class Program
         Console.WriteLine($"  Logs em       : {paths.WorkDir}");
         Console.WriteLine();
         Console.WriteLine("  Qualquer item incorreto acima é o ponto de partida da investigação.");
+    }
+
+    /// <summary>
+    /// Versao do assembly, vinda do &lt;Version&gt; do .csproj - o mesmo numero do
+    /// instalador. E a primeira coisa a perguntar em um relato de bug, entao vale ela
+    /// aparecer no --diagnostico em vez de exigir Propriedades do arquivo.
+    /// </summary>
+    private static string Versao()
+    {
+        var versao = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        return versao is null ? "desconhecida" : $"{versao.Major}.{versao.Minor}.{versao.Build}";
     }
 
     private static void MostrarAjuda()

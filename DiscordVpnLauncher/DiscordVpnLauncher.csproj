@@ -12,6 +12,11 @@
          nisso. -->
     <RootNamespace>DiscordVpnLauncher</RootNamespace>
     <ApplicationIcon>discord_icon.ico</ApplicationIcon>
+    <!-- Fonte unica da versao: o instalador le este numero (tools\build-installer.ps1
+         passa /DAppVersao para o ISCC) e o modo diagnostico o imprime. Sem isso o exe
+         ficava marcado como 1.0.0.0 enquanto o setup dizia outra coisa, e nao havia
+         como saber o que um usuario esta rodando ao receber um relato de bug. -->
+    <Version>1.4.0</Version>
     <TargetFramework>net8.0-windows</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>

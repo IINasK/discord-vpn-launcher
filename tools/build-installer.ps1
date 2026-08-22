@@ -53,10 +53,20 @@ if (-not $recursos -or -not ($recursos.Name -contains "openvpn.exe")) {
     Write-Warning "Rode tools\get-openvpn-binaries.ps1 e refaca o build."
 }
 
-$iscc = Find-ISCC
-Write-Host "==> Compilando o instalador com $iscc" -ForegroundColor Cyan
+# A versao sai do .csproj e nao do .iss: e o mesmo numero que vai parar no
+# executavel (FileVersion) e no --diagnostico. Manter dois lugares em sincronia na
+# mao ja produziu um setup 1.3.0 instalando um exe marcado como 1.0.0.0.
+$csproj = Join-Path $projeto "DiscordVpnLauncher.csproj"
+$versao = ([xml](Get-Content $csproj)).Project.PropertyGroup.Version | Where-Object { $_ }
 
-& $iscc "/DFonteExe=$publicado" $script
+if (-not $versao) {
+    throw "<Version> nao encontrado em $csproj. O instalador precisa dele para nomear a build."
+}
+
+$iscc = Find-ISCC
+Write-Host "==> Compilando o instalador $versao com $iscc" -ForegroundColor Cyan
+
+& $iscc "/DFonteExe=$publicado" "/DAppVersao=$versao" $script
 if ($LASTEXITCODE -ne 0) { throw "ISCC falhou (codigo $LASTEXITCODE)." }
 
 $saida = Get-ChildItem (Join-Path $raiz "installer\Output") -Filter "*.exe" |

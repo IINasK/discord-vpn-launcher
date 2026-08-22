@@ -23,7 +23,14 @@
 ; do marcador gravado por SetPreviousData, la no [Code] da desinstalacao.
 #define AppIdGuid "{8F3C2A94-6D51-4E2B-9C77-1B5A0E3D7F42}"
 #define AppNome "Discord VPN Launcher"
-#define AppVersao "1.4.0"
+; A versao vem do .csproj, que e a fonte unica do numero: o build-installer.ps1 le
+; o <Version> de la e passa /DAppVersao para o ISCC. Assim o executavel instalado, o
+; instalador e o --diagnostico nunca divergem - antes o exe dizia 1.0.0.0 enquanto o
+; setup dizia outra coisa, e um relato de bug nao identificava a build. O default
+; abaixo so entra em cena ao compilar o .iss na mao.
+#ifndef AppVersao
+  #define AppVersao "1.4.0"
+#endif
 #define AppExe "Discord.exe"
 #define AppAutor "Douglas"
 
